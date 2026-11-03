@@ -10,6 +10,12 @@ Sistema web interno para a área de Engenharia de uma arena de eventos (shows e 
 
 Os dados de custo de cada evento (mão de obra, avarias e consumo de água, energia e gás) ficavam numa planilha com macros que só uma pessoa sabia operar. As medições de notas fiscais, o budget e os prazos de documentos (alvará, laudos, auditoria) ficavam em outras planilhas. Montar o relatório pós-evento ou responder "quanto custou esse show?" levava horas.
 
+## Resultados
+
+- **Relatório pós-evento:** de 1h30 para 30 minutos por evento (67% menos tempo), de 4h a 10h economizadas por mês. A planilha passou a ser montada por um colega, e o site calcula os indicadores sozinho.
+- **Medições de notas fiscais:** tudo num só lugar, com consulta por período, controle de prazo (SLA) e alerta de contratos com saldo acabando.
+- **Uso:** cerca de 20 pessoas de diferentes áreas acessam, sem depender de uma única pessoa.
+
 ## O que o sistema faz
 
 | Módulo | Principais telas |
