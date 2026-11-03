@@ -1,0 +1,19 @@
+# dados do site: NUNCA versionar (banco, anexos, NFs, documentos, chave de sessão)
+data/
+config.json
+*.db
+*.sqlite*
+
+# planilhas e PDFs reais
+*.xlsx
+*.xlsm
+*.pdf
+!docs/*.png
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+servidor_erro.log
+.env

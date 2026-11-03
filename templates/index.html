@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Central de Engenharia</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%238D0DE3'/%3E%3Crect x='7' y='8' width='5' height='16' fill='%23C9E2BF'/%3E%3Crect x='15' y='8' width='3' height='16' fill='%23C9E2BF'/%3E%3Crect x='21' y='8' width='2' height='16' fill='%23C9E2BF'/%3E%3Crect x='25' y='8' width='1' height='16' fill='%23C9E2BF'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/css/estilo.css">
+</head>
+<body>
+  <header class="topo">
+    <div class="topo__marca">
+      <span class="antetitulo">Arena Demo · <span id="setor">Engenharia &amp; Infraestrutura</span></span>
+      <h1 id="titulo">Central de Engenharia</h1>
+    </div>
+    <div class="topo__acoes">
+      <span class="selo-modo" id="selo-modo"></span>
+      <button class="btn btn--fantasma" id="btn-cadeado" title="Entrar com a senha de edição" hidden></button>
+    </div>
+    <svg class="topo__barras" viewBox="0 0 190 120" preserveAspectRatio="none" aria-hidden="true">
+      <rect x="0" y="0" width="76" height="40"/><rect x="110" y="0" width="22" height="40"/>
+      <rect x="158" y="0" width="10" height="40"/><rect x="182" y="0" width="5" height="40"/>
+      <rect x="76" y="40" width="34" height="40"/><rect x="132" y="40" width="22" height="40"/>
+      <rect x="168" y="40" width="10" height="40"/>
+      <rect x="0" y="80" width="76" height="40"/><rect x="110" y="80" width="22" height="40"/>
+      <rect x="158" y="80" width="10" height="40"/><rect x="182" y="80" width="5" height="40"/>
+    </svg>
+  </header>
+
+  <nav class="abas" id="abas">
+    <button class="menu-btn" id="btn-menu" type="button" aria-label="Abrir o menu de áreas" aria-expanded="false" aria-controls="gaveta">
+      <span></span><span></span><span></span>
+    </button>
+    <span class="abas__area" id="area-nome">Relatório de eventos</span>
+    <a href="#/visao" data-rota="visao" data-guia="relatorio">Visão geral</a>
+    <a href="#/evento" data-rota="evento" data-guia="relatorio">Evento</a>
+    <a href="#/avarias" data-rota="avarias" data-guia="relatorio">Avarias</a>
+    <a href="#/manutencao" data-rota="manutencao" data-guia="relatorio">Manutenção</a>
+    <a href="#/comparar" data-rota="comparar" data-guia="relatorio">Comparar dias</a>
+    <a href="#/nf/medicoes" data-rota="nf" data-sub="medicoes" data-guia="nf" hidden>Medições</a>
+    <a href="#/nf/contratos" data-rota="nf" data-sub="contratos" data-guia="nf" hidden>Contratos <span class="abas__badge" id="badge-contratos" hidden></span></a>
+    <a href="#/nf/pedidos" data-rota="nf" data-sub="pedidos" data-guia="nf" hidden>Pedidos de compra</a>
+    <a href="#/nf/graficos" data-rota="nf" data-sub="graficos" data-guia="nf" hidden>Gráficos</a>
+    <a href="#/nf/prazos" data-rota="nf" data-sub="prazos" data-guia="nf" hidden>Prazos e feriados</a>
+    <a href="#/docs/lista" data-rota="docs" data-sub="lista" data-guia="docs" hidden>Todos os documentos <span class="abas__badge" id="badge-docs" hidden></span></a>
+    <a href="#/docs/vencimentos" data-rota="docs" data-sub="vencimentos" data-guia="docs" hidden>Próximos vencimentos</a>
+    <a href="#/budget/budget" data-rota="budget" data-sub="budget" data-guia="budget" hidden>Budget</a>
+    <a href="#/sup/mes" data-rota="sup" data-sub="mes" data-guia="sup" hidden>Rateio do mês</a>
+    <a href="#/sup/resumo" data-rota="sup" data-sub="resumo" data-guia="sup" hidden>Resumo por mês</a>
+    <span class="abas__sep"></span>
+    <a href="#/cadastro" data-rota="cadastro" data-editor data-guia="relatorio">Cadastro</a>
+    <a href="#/catalogo" data-rota="catalogo" data-guia="relatorio">Catálogo</a>
+    <a href="#/dados" data-rota="dados" data-editor data-guia="relatorio">Importar / Exportar</a>
+    <a href="#/nf/config" data-rota="nf" data-sub="config" data-guia="nf" hidden>Configurações</a>
+    <a href="#/budget/cadastros" data-rota="budget" data-sub="cadastros" data-guia="budget" hidden>Cadastros</a>
+    <a href="#/sup/config" data-rota="sup" data-sub="config" data-guia="sup" data-editor hidden>Configurações</a>
+  </nav>
+
+  <div class="gaveta" id="gaveta" hidden>
+    <div class="gaveta__fundo" data-fechar-gaveta></div>
+    <aside class="gaveta__painel" role="dialog" aria-modal="true" aria-label="Áreas do site">
+      <div class="gaveta__topo">
+        <div><span class="antetitulo">Arena Demo</span><b>Central de Engenharia</b></div>
+        <button class="gaveta__fechar" type="button" data-fechar-gaveta aria-label="Fechar o menu">×</button>
+      </div>
+      <p class="gaveta__rot">Áreas</p>
+      <nav class="gaveta__lista" id="areas">
+        <a href="#/visao" data-area-btn="relatorio"><b>Relatório de eventos</b><small>Visão geral, eventos, avarias, manutenção e comparação de dias</small></a>
+        <a href="#/nf/medicoes" data-area-btn="nf"><b>Notas fiscais</b><small>Medições, contratos, pedidos de compra, gráficos, prazos e feriados</small></a>
+        <a href="#/docs/lista" data-area-btn="docs"><b>Documentos <span class="abas__badge" id="badge-docs-area" hidden></span></b><small>Alvará, auditoria e outros: vencimentos e renovações</small></a>
+        <a href="#/budget/budget" data-area-btn="budget"><b>Budget</b><small>Solicitado, aprovado e incorrido por projeto, centro de custo e classe; cadastros</small></a>
+        <a href="#/sup/mes" data-area-btn="sup"><b>Suprimentos</b><small>Contas de energia, água e gás: rateio mensal por centro de custo e planilha de importação</small></a>
+      </nav>
+      <div class="gaveta__rodape">
+        <a href="#/equipe" data-admin hidden>Equipe e acessos</a>
+        <button class="gaveta__atalhos" type="button" data-fechar-gaveta onclick="App.ajudaTeclado()">Atalhos do teclado (tecla ?)</button>
+      </div>
+    </aside>
+  </div>
+
+  <main id="app" class="conteudo" tabindex="-1"></main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="modal" class="modal" hidden>
+    <div class="modal__caixa" role="dialog" aria-modal="true" tabindex="-1">
+      <button class="modal__fechar" data-fechar aria-label="Fechar">×</button>
+      <div id="modal-corpo"></div>
+    </div>
+  </div>
+
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <script src="/static/vendor/chartjs-plugin-datalabels.min.js"></script>
+  <script src="/static/js/nucleo.js"></script>
+  <script src="/static/js/ajuda.js"></script>
+  <script src="/static/js/graficos.js"></script>
+  <script src="/static/js/pag_visao.js"></script>
+  <script src="/static/js/pag_evento.js"></script>
+  <script src="/static/js/pag_avarias.js"></script>
+  <script src="/static/js/pag_manutencao.js"></script>
+  <script src="/static/js/pag_comparar.js"></script>
+  <script src="/static/js/pag_cadastro.js"></script>
+  <script src="/static/js/pag_dados.js"></script>
+  <script src="/static/js/pag_equipe.js"></script>
+  <script src="/static/js/pag_nf.js"></script>
+  <script src="/static/js/pag_docs.js"></script>
+  <script src="/static/js/pag_budget.js"></script>
+  <script src="/static/js/pag_sup.js"></script>
+  <script src="/static/js/rotas.js"></script>
+</body>
+</html>
