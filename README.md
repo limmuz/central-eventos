@@ -4,6 +4,8 @@ Sistema web interno para a área de Engenharia de uma arena de eventos (shows e 
 
 > ⚠️ **Versão de demonstração.** Todos os dados deste repositório são **fictícios** (eventos, valores, fornecedores, contratos, documentos e códigos internos). Nenhum dado real da empresa foi publicado. O banco é criado na sua máquina pelo `seed_demo.py`.
 
+🔗 **Demo ao vivo (somente leitura):** https://limmuz.github.io/central-demo/
+
 ![Visão geral](docs/visao.png)
 
 ## O problema
