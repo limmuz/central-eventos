@@ -6,14 +6,23 @@ const guiasDe = (u) => {
   if (u.perfil === "admin") return Object.keys(App.meta.guias || NOMES_GUIA);
   try { return JSON.parse(u.acessos || '["relatorio"]'); } catch (e) { return ["relatorio"]; }
 };
+const visaoDe = (u) => {
+  if (u.perfil === "admin" || !u.visao) return null;
+  try { return JSON.parse(u.visao); } catch (e) { return null; }
+};
+/** Resumo da visão de Budget e Notas fiscais: "Tudo" ou "2 CC · 3 projetos". */
+const visaoTexto = (u) => {
+  const v = visaoDe(u);
+  return v ? [v.centros.length ? `${v.centros.length} CC` : "", v.projetos.length ? `${v.projetos.length} projeto(s)` : ""].filter(Boolean).join(" · ") : "Tudo";
+};
 
 App.paginas.equipe = async function (raiz) {
-  const [usuarios, historico] = await Promise.all([App.api("/api/usuarios"), App.api("/api/historico")]);
+  const [usuarios, historico, areas] = await Promise.all([App.api("/api/usuarios"), App.api("/api/historico"), App.api("/api/areas")]);
   const ativos = usuarios.filter((u) => u.ativo);
   raiz.append(
     el("div", { class: "pagina-cabecalho" },
       el("div", {}, el("h2", {}, "Equipe"), el("p", {}, "Contas de quem pode cadastrar e editar pelo próprio computador")),
-      el("div", { class: "acoes" }, el("button", { class: "btn", onclick: () => editar({}) }, "+ Nova conta"))),
+      el("div", { class: "acoes" }, el("button", { class: "btn", onclick: () => App.editarConta({}) }, "+ Nova conta"))),
     el("div", { class: "kpis" },
       App.kpi("Contas ativas", App.fmt.num(ativos.length), "core", `${usuarios.length - ativos.length} desativada(s)`),
       App.kpi("Administradores", App.fmt.num(ativos.filter((u) => u.perfil === "admin").length), "p100", "também gerenciam a equipe"),
@@ -25,79 +34,150 @@ App.paginas.equipe = async function (raiz) {
           { rotulo: "Usuário", valor: (u) => u.login },
           { rotulo: "Perfil", valor: (u) => u.perfil, render: (u) => el("span", { class: "etiqueta" + (u.perfil === "admin" ? "" : " etiqueta--ok") }, u.perfil === "admin" ? "Administrador" : "Editor") },
           { rotulo: "Guias", valor: (u) => guiasDe(u).join(","), render: (u) => el("div", { class: "chips" }, guiasDe(u).map((g) => el("span", { class: "etiqueta" }, NOMES_GUIA[g] || g))) },
+          { rotulo: "Área", valor: (u) => u.area || "", render: (u) => u.area || (u.perfil === "admin" ? "—" : el("span", { class: "etiqueta etiqueta--alerta" }, "Sem área")) },
+          { rotulo: "Visão", valor: visaoTexto },
           { rotulo: "Situação", valor: (u) => u.ativo, render: (u) => u.ativo ? "Ativa" : el("span", { class: "etiqueta etiqueta--alerta" }, "Desativada") },
           { rotulo: "Último acesso", valor: (u) => u.ultimo_acesso || "", render: (u) => u.ultimo_acesso || "—" },
-        ], usuarios, { onClick: editar, vazio: "Nenhuma conta ainda. Crie a primeira em “+ Nova conta”." }),
+        ], usuarios, { onClick: App.editarConta, vazio: "Nenhuma conta ainda. Crie a primeira em “+ Nova conta”." }),
         el("div", { class: "ajuda", style: { marginTop: "12px", lineHeight: 1.6 } },
           el("b", {}, "Como a equipe entra: "), "abre o site pelo endereço da rede, clica em “Entrar na conta” na tela inicial e usa o usuário e a senha. ",
           "O acesso fica salvo por 30 dias naquele navegador. Quem não tem conta continua só visualizando.",
           el("br"), el("b", {}, "Editor"), " cadastra, anexa e edita dados. ", el("b", {}, "Administrador"), " também cria e desativa contas."))),
+      el("div", { class: "s-12" }, App.cartao("Áreas", "separam os Documentos: cada pessoa vê os da própria área",
+        el("div", { class: "linha-acoes", style: { marginTop: 0, marginBottom: "10px" } }, el("button", { class: "btn", type: "button", onclick: () => editarArea({}) }, "+ Nova área")),
+        App.tabela([
+          { rotulo: "Área", valor: (a) => a.nome, render: (a) => el("b", {}, a.nome) },
+          { rotulo: "Contas", num: true, valor: (a) => a.n_contas },
+          { rotulo: "Documentos", num: true, valor: (a) => a.n_docs },
+          { rotulo: "", fixa: true, render: (a) => el("span", { class: "perfil-acoes" },
+            el("button", { class: "btn btn--mini btn--linha", type: "button", onclick: () => editarArea(a) }, "Renomear"),
+            el("button", { class: "btn btn--mini btn--linha", type: "button", disabled: a.n_contas || a.n_docs ? true : null, title: a.n_contas || a.n_docs ? "Em uso: mude as contas e documentos antes" : "", onclick: async () => {
+              if (!(await App.confirmar("Excluir área", `Excluir a área ${a.nome}?`, "Excluir"))) return;
+              try { await App.api(`/api/areas/${a.id}`, { method: "DELETE" }); App.toast("Área excluída."); App.rotear(); } catch (e) { App.toast(e.message, true); }
+            } }, "Excluir")) },
+        ], areas, { vazio: "Nenhuma área cadastrada." }))),
       el("div", { class: "s-12" }, App.cartao("Histórico de alterações", "quem fez o quê",
         App.tabela([
           { rotulo: "Quando", valor: (h) => h.quando, render: (h) => h.quando.slice(0, 16).split(" ").map((p, i) => (i ? p : App.fmt.data(p))).join(" ") },
           { rotulo: "Quem", valor: (h) => h.usuario, render: (h) => el("b", {}, h.usuario) },
           { rotulo: "O quê", valor: (h) => h.acao },
           { rotulo: "Detalhe", valor: (h) => h.detalhe },
+          { rotulo: "IP", oculta: true, valor: (h) => h.ip || "" },
         ], historico, { vazio: "Nada registrado ainda." })))));
-
-  function editar(u) {
-    const novo = !u.id;
-    const nome = el("input", { type: "text", value: u.nome || "", placeholder: "Nome completo" });
-    const login = el("input", { type: "text", value: u.login || "", placeholder: "ex.: ana.souza", autocomplete: "off" });
-    const senha = el("input", { type: "text", placeholder: novo ? "mínimo 6 caracteres" : "deixe vazio para manter", autocomplete: "off" });
-    const perfil = el("select", {}, el("option", { value: "editor", selected: u.perfil !== "admin" }, "Editor (cadastra e edita)"),
-      el("option", { value: "admin", selected: u.perfil === "admin" }, "Administrador (também gerencia a equipe)"));
-    const ativo = el("input", { type: "checkbox", checked: novo || !!u.ativo });
-    const atuais = novo ? ["relatorio"] : guiasDe(u);
-    const descr = { relatorio: "Visão geral, Evento, Avarias, Manutenção, Comparar, Cadastro e Importar/Exportar", nf: "Medições, contratos, pedidos de compra, gráficos, prazos e configurações das notas fiscais", docs: "Alvará da arena, auditoria interna: vencimentos e histórico de anexos", budget: "Budget por projeto, centro de custo e classe (solicitado, aprovado e incorrido) e cadastros", sup: "Contas de energia elétrica, água e gás: rateio mensal por centro de custo / projeto e planilha de importação do Suprimentos" };
-    const todas = { ...NOMES_GUIA, ...(App.meta.guias || {}) };
-    const ordem = ["relatorio", "nf", "docs", "budget", "sup", ...Object.keys(todas).filter((g) => !["relatorio", "nf", "docs", "budget", "sup"].includes(g))];
-    const caixas = ordem.filter((g) => todas[g]).map((g) => [g, todas[g]]).map(([g, nomeG]) => {
-      const c = el("input", { type: "checkbox", value: g, checked: atuais.includes(g) });
-      return { g, c, linha: el("label", {}, c, el("span", {}, el("b", {}, nomeG), el("small", { class: "ajuda", style: { display: "block", margin: 0 } }, descr[g] || ""))) };
-    });
-    const travarAdmin = () => caixas.forEach(({ c }) => { if (perfil.value === "admin") c.checked = true; c.disabled = perfil.value === "admin"; });
-    perfil.addEventListener("change", travarAdmin);
-    const gerar = el("button", { class: "btn btn--linha btn--mini", onclick: () => {
-      const c = "abcdefghjkmnpqrstuvwxyz23456789"; senha.value = Array.from({ length: 8 }, () => c[Math.floor(Math.random() * c.length)]).join("");
-    } }, "Gerar senha");
-    nome.addEventListener("input", () => {
-      if (novo && !login.dataset.mexido) login.value = App.norm(nome.value).trim().split(/\s+/).filter(Boolean).slice(0, 2).join(".").replace(/[^a-z0-9.]/g, "");
-    });
-    login.addEventListener("input", () => (login.dataset.mexido = "1"));
+  function editarArea(a) {
+    const nome = el("input", { type: "text", value: a.nome || "", maxlength: 60, placeholder: "ex.: MANUTENÇÃO" });
     const msg = el("p", { class: "ajuda", style: { color: "var(--perigo)", minHeight: "18px" } });
-    App.modal(el("div", {}, el("h3", {}, novo ? "Nova conta" : `Conta de ${u.nome}`),
-      el("div", { class: "grade", style: { gap: "10px" } },
-        el("label", { class: "campo" }, el("span", {}, "Nome"), nome),
-        el("label", { class: "campo" }, el("span", {}, "Usuário (para entrar)"), login),
-        el("label", { class: "campo" }, el("span", {}, novo ? "Senha" : "Nova senha"), el("div", { style: { display: "flex", gap: "6px" } }, senha, gerar)),
-        el("label", { class: "campo" }, el("span", {}, "Perfil"), perfil),
-        el("div", { class: "campo" }, el("span", {}, "Guias que a pessoa pode acessar"), el("div", { class: "acessos-lista" }, caixas.map((x) => x.linha)),
-          el("small", { class: "ajuda", style: { margin: 0 } }, "Administrador tem acesso a todas. Quem entra como Visitante só vê o Relatório de eventos.")),
-        novo ? null : el("label", { style: { display: "flex", gap: "8px", alignItems: "center" } }, ativo, "Conta ativa (desmarque para bloquear o acesso)")),
-      el("p", { class: "ajuda" }, "Passe o usuário e a senha para a pessoa. Ela pode trocar a senha depois clicando no próprio nome, no topo do site."),
-      msg,
-      el("div", { class: "linha-acoes" }, el("button", {
-        class: "btn", onclick: async () => {
-          try {
-            await App.api("/api/usuarios", { method: "POST", json: { id: u.id, nome: nome.value, login: login.value, senha: senha.value, perfil: perfil.value, ativo: ativo.checked, acessos: caixas.filter((x) => x.c.checked).map((x) => x.g) } });
-            const credenciais = senha.value ? `Endereço: ${location.origin.replace("localhost", "NOME-DO-SEU-PC")}\nUsuário: ${login.value.trim().toLowerCase()}\nSenha: ${senha.value}` : "";
-            App.meta = await App.api("/api/meta"); App.atualizarCadeado();
-            App.rotear();
-            if (credenciais) {
-              const txt = el("textarea", { rows: 4, readonly: true, style: { width: "100%" } }, credenciais);
-              App.modal(el("div", {}, el("h3", {}, novo ? "Conta criada" : "Senha alterada"),
-                el("p", {}, "Passe estes dados para a pessoa (a senha não aparece de novo depois):"), txt,
-                el("div", { class: "linha-acoes" },
-                  el("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(credenciais); App.toast("Copiado."); } catch (e) { txt.select(); document.execCommand("copy"); App.toast("Copiado."); } } }, "Copiar"),
-                  el("button", { class: "btn btn--linha", "data-fechar": "" }, "Fechar"))));
-            } else {
-              App.fecharModal();
-              App.toast("Conta atualizada.");
-            }
-          } catch (e) { msg.textContent = e.message; }
-        },
-      }, "Salvar"), el("button", { class: "btn btn--linha", "data-fechar": "" }, "Cancelar"))));
-    travarAdmin();
+    App.modal(el("div", {}, el("h3", {}, a.id ? `Renomear ${a.nome}` : "Nova área"),
+      el("label", { class: "campo" }, el("span", {}, "Nome"), nome),
+      a.id ? el("p", { class: "ajuda" }, "As contas e os documentos desta área acompanham o novo nome.") : null, msg,
+      el("div", { class: "linha-acoes" }, el("button", { class: "btn", onclick: async () => {
+        try { await App.api("/api/areas", { method: "POST", json: { id: a.id, nome: nome.value } }); App.fecharModal(); App.toast("Área salva."); App.rotear(); } catch (e) { msg.textContent = e.message; }
+      } }, "Salvar"), el("button", { class: "btn btn--linha", "data-fechar": "" }, "Cancelar"))));
   }
+};
+
+/** Janela de criar/editar conta. u.solicitacao_id: pedido de login que fica aprovado ao salvar. */
+App.editarConta = async function (u) {
+  const [cad, areasLista] = await Promise.all([App.api("/api/budget/cadastros").catch(() => ({ centros: [], projetos: [] })), App.api("/api/areas").catch(() => [])]);
+  const novo = !u.id;
+  const nome = el("input", { type: "text", value: u.nome || "", placeholder: "Nome completo" });
+  const sugerir = () => App.norm(nome.value).trim().split(/\s+/).filter(Boolean).slice(0, 2).join(".").replace(/[^a-z0-9.]/g, "");
+  const login = el("input", { type: "text", value: u.login || (novo ? sugerir() : ""), placeholder: "ex.: ana.souza", autocomplete: "off" });
+  const senha = el("input", { type: "text", placeholder: novo ? "mínimo 8 caracteres" : "deixe vazio para manter", autocomplete: "off" });
+  const perfil = el("select", {}, el("option", { value: "editor", selected: u.perfil !== "admin" }, "Editor (cadastra e edita)"),
+    el("option", { value: "admin", selected: u.perfil === "admin" }, "Administrador (também gerencia a equipe)"));
+  const area = el("select", {}, el("option", { value: "" }, "Escolha a área"), areasLista.map((a) => el("option", { value: a.nome, selected: a.nome === u.area }, a.nome)));
+  const ativo = el("input", { type: "checkbox", checked: novo || !!u.ativo });
+  const atuais = novo && !u.acessos ? ["relatorio"] : guiasDe(u);
+  const descr = { relatorio: "Todos já visualizam, até visitantes. Marque para cadastrar eventos e importar planilhas", nf: "Medições, contratos, pedidos de compra, gráficos, prazos e configurações das notas fiscais", docs: "Alvará da arena, auditoria interna: vencimentos e histórico de anexos", budget: "Budget por projeto, centro de custo e classe (solicitado, aprovado e incorrido) e cadastros", sup: "Contas de energia elétrica, água e gás: rateio mensal por centro de custo / projeto e planilha de importação do Suprimentos" };
+  const todas = { ...NOMES_GUIA, ...(App.meta.guias || {}) };
+  const ordem = ["relatorio", "nf", "docs", "budget", "sup", ...Object.keys(todas).filter((g) => !["relatorio", "nf", "docs", "budget", "sup"].includes(g))];
+  const caixas = ordem.filter((g) => todas[g]).map((g) => [g, todas[g]]).map(([g, nomeG]) => {
+    const c = el("input", { type: "checkbox", value: g, checked: atuais.includes(g) });
+    return { g, c, linha: el("label", {}, c, el("span", {}, el("b", {}, nomeG), el("small", { class: "ajuda", style: { display: "block", margin: 0 } }, descr[g] || ""))) };
+  });
+  /* ---- visão de Budget e Notas fiscais: centros de custo e projetos que a pessoa enxerga */
+  const vAtual = visaoDe(u);
+  const nomeModo = "visao-modo-" + Math.random().toString(36).slice(2);
+  const modoTudo = el("input", { type: "radio", name: nomeModo, checked: !vAtual });
+  const modoMarcar = el("input", { type: "radio", name: nomeModo, checked: !!vAtual });
+  const listaMarcar = (rotulo, lista, marcados) => {
+    const todos = [...lista.map((x) => [x.nome, x.descricao || ""]),
+      ...marcados.filter((m) => !lista.some((x) => x.nome === m)).map((m) => [m, ""])];
+    const busca = el("input", { type: "search", placeholder: "Buscar…", "aria-label": `Buscar em ${rotulo}` });
+    const caixasV = todos.map(([nome, desc]) => {
+      const c = el("input", { type: "checkbox", value: nome, checked: marcados.includes(nome) });
+      return { c, texto: App.norm(`${nome} ${desc}`), linha: el("label", {}, c, el("span", {}, desc ? `${nome} — ${desc}` : nome)) };
+    });
+    busca.addEventListener("input", () => { const q = App.norm(busca.value); caixasV.forEach((x) => (x.linha.hidden = !x.texto.includes(q))); });
+    return { el: el("div", { class: "campo" }, el("span", {}, rotulo), busca,
+      el("div", { class: "visao-lista" }, todos.length ? caixasV.map((x) => x.linha) : el("small", { class: "ajuda", style: { margin: 0 } }, "Nada cadastrado ainda."))),
+      valores: () => caixasV.filter((x) => x.c.checked).map((x) => x.c.value) };
+  };
+  const lCc = listaMarcar("Centros de custo", cad.centros, vAtual ? vAtual.centros : []);
+  const lPj = listaMarcar("Projetos", cad.projetos, vAtual ? vAtual.projetos : []);
+  const painelV = el("div", { class: "visao-listas" }, lCc.el, lPj.el);
+  const atualizarV = () => { painelV.hidden = !modoMarcar.checked; };
+  modoTudo.addEventListener("change", atualizarV);
+  modoMarcar.addEventListener("change", atualizarV);
+  atualizarV();
+  const blocoV = el("div", { class: "campo" }, el("span", {}, "O que pode ver em Budget e Notas fiscais"),
+    el("div", { class: "acessos-lista" },
+      el("label", {}, modoTudo, el("span", {}, "Tudo")),
+      el("label", {}, modoMarcar, el("span", {}, "Só os centros de custo e projetos marcados"))),
+    painelV,
+    el("small", { class: "ajuda", style: { margin: 0 } }, "A pessoa vê as linhas, medições, pedidos e contratos de qualquer item marcado, seja quem for que lançou. O que está sem centro de custo e sem projeto fica escondido."));
+  const travarAdmin = () => {
+    caixas.forEach(({ c }) => { if (perfil.value === "admin") c.checked = true; c.disabled = perfil.value === "admin"; });
+    blocoV.hidden = perfil.value === "admin";
+  };
+  perfil.addEventListener("change", travarAdmin);
+  const gerar = el("button", { class: "btn btn--linha btn--mini", onclick: () => {
+    const c = "abcdefghjkmnpqrstuvwxyz23456789"; senha.value = Array.from(crypto.getRandomValues(new Uint32Array(10)), (x) => c[x % c.length]).join("");
+  } }, "Gerar senha");
+  nome.addEventListener("input", () => {
+    if (novo && !login.dataset.mexido) login.value = sugerir();
+  });
+  login.addEventListener("input", () => (login.dataset.mexido = "1"));
+  const msg = el("p", { class: "ajuda", style: { color: "var(--perigo)", minHeight: "18px" } });
+  App.modal(el("div", {}, el("h3", {}, novo ? "Nova conta" : `Conta de ${u.nome}`),
+    App.progressoForm([{ rotulo: "nome", ok: () => !!nome.value.trim() }, { rotulo: "usuário", ok: () => !!login.value.trim() },
+      novo ? { rotulo: "senha", ok: () => senha.value.length >= 8 } : null,
+      { rotulo: "área", ok: () => perfil.value === "admin" || !caixas.some((x) => x.g === "docs" && x.c.checked) || !!area.value }].filter(Boolean)),
+    el("div", { class: "grade", style: { gap: "10px" } },
+      el("label", { class: "campo" }, el("span", {}, "Nome"), nome),
+      el("label", { class: "campo" }, el("span", {}, "Usuário (para entrar)"), login),
+      el("label", { class: "campo" }, el("span", {}, novo ? "Senha" : "Nova senha"), el("div", { style: { display: "flex", gap: "6px" } }, senha, gerar)),
+      el("label", { class: "campo" }, el("span", {}, "Perfil"), perfil),
+      el("label", { class: "campo" }, el("span", {}, "Área"), area, el("small", { class: "ajuda", style: { margin: 0 } }, "Define os documentos que a pessoa vê e a área dos que ela criar.")),
+      el("div", { class: "campo" }, el("span", {}, "Guias que a pessoa pode acessar"), el("div", { class: "acessos-lista" }, caixas.map((x) => x.linha)),
+        el("small", { class: "ajuda", style: { margin: 0 } }, "Administrador tem acesso a todas. Quem entra como Visitante só vê o Relatório de eventos.")),
+      blocoV,
+      novo ? null : el("label", { style: { display: "flex", gap: "8px", alignItems: "center" } }, ativo, "Conta ativa (desmarque para bloquear o acesso)")),
+    el("p", { class: "ajuda" }, "Passe o usuário e a senha para a pessoa. Ela pode trocar a senha depois em Meu perfil, clicando na foto no topo do site."),
+    msg,
+    el("div", { class: "linha-acoes" }, el("button", {
+      class: "btn", onclick: async () => {
+        const visao = perfil.value !== "admin" && modoMarcar.checked ? { centros: lCc.valores(), projetos: lPj.valores() } : null;
+        if (visao && !visao.centros.length && !visao.projetos.length) { msg.textContent = "Marque pelo menos um centro de custo ou projeto, ou escolha Tudo."; return; }
+        try {
+          await App.api("/api/usuarios", { method: "POST", json: { id: u.id, visao, area: area.value, solicitacao_id: u.solicitacao_id, nome: nome.value, login: login.value, senha: senha.value, perfil: perfil.value, ativo: ativo.checked, acessos: caixas.filter((x) => x.c.checked).map((x) => x.g) } });
+          const credenciais = senha.value ? `Endereço: ${location.origin.replace("localhost", "NOME-DO-SEU-PC")}\nUsuário: ${login.value.trim().toLowerCase()}\nSenha: ${senha.value}` : "";
+          App.meta = await App.api("/api/meta"); App.atualizarCadeado();
+          App.rotear();
+          if (credenciais) {
+            const txt = el("textarea", { rows: 4, readonly: true, style: { width: "100%" } }, credenciais);
+            App.modal(el("div", {}, el("h3", {}, novo ? "Conta criada" : "Senha alterada"),
+              el("p", {}, "Passe estes dados para a pessoa (a senha não aparece de novo depois):"), txt,
+              el("div", { class: "linha-acoes" },
+                el("button", { class: "btn", onclick: async () => { try { await navigator.clipboard.writeText(credenciais); App.toast("Copiado."); } catch (e) { txt.select(); document.execCommand("copy"); App.toast("Copiado."); } } }, "Copiar"),
+                el("button", { class: "btn btn--linha", "data-fechar": "" }, "Fechar"))));
+          } else {
+            App.fecharModal();
+            App.toast("Conta atualizada.");
+          }
+        } catch (e) { msg.textContent = e.message; }
+      },
+    }, "Salvar"), el("button", { class: "btn btn--linha", "data-fechar": "" }, "Cancelar"))));
+  travarAdmin();
 };

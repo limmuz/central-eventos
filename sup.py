@@ -16,6 +16,7 @@ from flask import abort, jsonify, request, send_file
 
 import db
 import importer
+import visao
 
 UTIL = [("energia", "Energia elétrica"), ("agua", "Água"), ("gas", "Gás")]
 UKEYS = [u for u, _ in UTIL]
@@ -881,12 +882,18 @@ def _suprimentos(wb, d, u, nome, cfg, dcc, dpj):
 
 
 # ----------------------------------------------------------------------------- GateX (medição de energia)
+GATEX_HOSTS = {"gatex.exemplo.local"}
+
+
 def _gatex_partes(link):
     from urllib.parse import parse_qs, urlparse
     u = urlparse((link or "").strip())
     sid = (parse_qs(u.query).get("sid") or [""])[0]
     if not u.scheme or not u.netloc or not sid:
         abort(400, "Cole em Configurações o link do GateX (abra o GateX no navegador e copie o endereço, com o '?sid=...').")
+    # o servidor abre este endereço: só o GateX, para o link não servir de passagem para outras máquinas da rede
+    if u.scheme not in ("http", "https") or (u.hostname or "").lower().split(".")[0] not in GATEX_HOSTS:
+        abort(400, f"O link precisa ser do servidor do GateX ({', '.join(sorted(GATEX_HOSTS))}).")
     return f"{u.scheme}://{u.netloc}", sid
 
 
@@ -974,6 +981,7 @@ def gatex_mes(con, mes):
 
 # ----------------------------------------------------------------------------- rotas
 def registrar_rotas(app, guarda, registrar):
+    import sup_modelo
     with db.connect() as con:
         con.executescript(SCHEMA)
         con.execute("DELETE FROM sup_conta_rateio WHERE conta_id NOT IN (SELECT id FROM sup_contas)")
@@ -1108,12 +1116,13 @@ def registrar_rotas(app, guarda, registrar):
     def sup_budget_linhas():
         """Linhas do budget (centro de custo + projeto + classe) do ano, para escolher onde entra cada conta."""
         ano = int(request.args.get("ano") or dt.date.today().year)
+        cond_v, par_v = visao.cond_item("i")
         with db.connect() as con:
-            rows = con.execute("""SELECT i.id, i.centro_custo, i.projeto, i.classe_numero, i.classe_descricao,
+            rows = con.execute(f"""SELECT i.id, i.centro_custo, i.projeto, i.classe_numero, i.classe_descricao,
                                          COALESCE(bc.descricao,'') AS cc_desc, COALESCE(bp.descricao,'') AS pj_desc, p.valor AS aprovado
                                   FROM bud_previsto p JOIN bud_itens i ON i.id = p.item_id
                                   LEFT JOIN bud_centros bc ON bc.nome = i.centro_custo LEFT JOIN bud_projetos bp ON bp.nome = i.projeto
-                                  WHERE p.ano=? ORDER BY i.centro_custo, i.projeto, i.classe_numero""", (ano,)).fetchall()
+                                  WHERE p.ano=? AND {cond_v} ORDER BY i.centro_custo, i.projeto, i.classe_numero""", (ano, *par_v)).fetchall()
             return jsonify([dict(r) for r in rows])
 
     @app.post("/api/sup/contas/<int:cid>/budget")

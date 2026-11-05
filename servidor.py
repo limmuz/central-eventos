@@ -13,7 +13,7 @@ from pathlib import Path
 
 # log de diagnóstico fica na pasta do usuário
 LOG = Path(os.environ.get("USERPROFILE") or Path.home()) / "servidor_erro.log"
-_flog = open(LOG, "w", encoding="utf-8")
+_flog = open(LOG, "a", encoding="utf-8")   # acrescenta: reiniciar não apaga o registro do que deu errado
 faulthandler.enable(file=_flog)          # se o Python travar "em silêncio", o motivo vai pro log
 faulthandler.enable()                    # ... e também aparece na tela
 logging.basicConfig(level=logging.INFO, format="  %(message)s")

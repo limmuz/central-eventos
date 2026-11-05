@@ -15,6 +15,9 @@ from werkzeug.utils import secure_filename
 
 import db
 import importer
+import lixeira
+import seguranca
+import visao
 
 DOCS_DIR = db.DATA_DIR / "documentos"
 CATEGORIAS_PADRAO = ["ALVARÁ DA ARENA", "AUDITORIA INTERNA"]
@@ -88,14 +91,18 @@ def situacao(doc, hoje=None):
     return "EM DIA", dias
 
 
+AREA_PADRAO = "ENGENHARIA"
+
+
 def listar(con):
     docs = []
-    for r in con.execute("""
+    cond_v, par_v = visao.cond_doc("d")
+    for r in con.execute(f"""
         SELECT d.*, SUM(CASE WHEN COALESCE(a.arquivo,'') <> '' THEN 1 ELSE 0 END) AS n_anexos,
                SUM(CASE WHEN COALESCE(a.data_renovacao,'') <> '' THEN 1 ELSE 0 END) AS n_renovacoes,
                MAX(CASE WHEN COALESCE(a.arquivo,'') <> '' THEN a.id END) AS ultimo_anexo_id
         FROM doc_documentos d LEFT JOIN doc_anexos a ON a.documento_id = d.id
-        GROUP BY d.id ORDER BY d.arquivado, d.data_vencimento = '', d.data_vencimento, d.nome"""):
+        WHERE {cond_v} GROUP BY d.id ORDER BY d.arquivado, d.data_vencimento = '', d.data_vencimento, d.nome""", par_v):
         d = dict(r)
         d["n_anexos"], d["n_renovacoes"] = d["n_anexos"] or 0, d["n_renovacoes"] or 0
         d["situacao"], d["dias_para_vencer"] = situacao(d)
@@ -154,7 +161,9 @@ def importar_planilha(con, caminho):
                 campos["aviso_dias"] = max(0, int(float(str(aviso).replace(",", "."))))
             except ValueError:
                 res["avisos"].append(f"Linha {n_linha}: “AVISAR (DIAS ANTES)” não é número ({aviso}).")
-        atual = con.execute("SELECT * FROM doc_documentos WHERE UPPER(nome)=UPPER(?) AND categoria=?", (nome, campos["categoria"])).fetchone()
+        # documento de outra área não é tocado: com o mesmo nome, vira um documento próprio da área de quem importou
+        cond_v, par_v = visao.cond_doc("d")
+        atual = con.execute(f"SELECT * FROM doc_documentos d WHERE UPPER(nome)=UPPER(?) AND categoria=? AND {cond_v}", (nome, campos["categoria"], *par_v)).fetchone()
         if atual:
             muda = {k: v for k, v in campos.items() if v not in ("", None) and atual[k] != v}
             if muda:
@@ -164,7 +173,10 @@ def importar_planilha(con, caminho):
             else:
                 res["ja_existiam"] += 1
         else:
-            campos = {"nome": nome, **campos}
+            if visao.area_docs() == "":
+                res["avisos"].append(f"Linha {n_linha}: sua conta não tem área definida. Peça ao administrador.")
+                continue
+            campos = {"nome": nome, "area": visao.area_docs() or AREA_PADRAO, **campos}
             campos.setdefault("aviso_dias", 60)
             con.execute(f"INSERT INTO doc_documentos({', '.join(campos)}) VALUES ({', '.join('?' * len(campos))})", tuple(campos.values()))
             res["novos"] += 1
@@ -184,6 +196,9 @@ def recalcular(con, did):
 
 def _migrar(con):
     cols = [r[1] for r in con.execute("PRAGMA table_info(doc_documentos)")]
+    if "area" not in cols:   # os documentos que já existiam ficam em Engenharia
+        con.execute("ALTER TABLE doc_documentos ADD COLUMN area TEXT DEFAULT ''")
+        con.execute("UPDATE doc_documentos SET area=?", (AREA_PADRAO,))
     if "periodicidade_meses" not in cols:
         con.execute("ALTER TABLE doc_documentos ADD COLUMN periodicidade_meses INTEGER")
     if "em_processo" not in cols:
@@ -265,6 +280,7 @@ def registrar_rotas(app, guarda, registrar, quem):
     @guarda
     def docs_anexos(did):
         with db.connect() as con:
+            visao.exigir_doc(con, did)
             return jsonify(db.rows(con.execute("SELECT * FROM doc_anexos WHERE documento_id=? ORDER BY id DESC", (did,))))
 
     @app.post("/api/docs")
@@ -297,8 +313,18 @@ def registrar_rotas(app, guarda, registrar, quem):
             except ValueError:
                 pass
         arq = request.files.get("arquivo")
+        area = visao.area_docs()
+        if area == "":
+            return jsonify(erro="Sua conta não tem área definida. Peça ao administrador."), 403
+        if area is None and importer.up(f.get("area")):   # administrador escolhe a área; os outros criam na própria
+            campos["area"] = importer.up(f.get("area"))
+        elif not did:
+            campos["area"] = area or AREA_PADRAO
         with db.connect() as con:
+            if "area" in campos and not con.execute("SELECT 1 FROM areas WHERE nome=?", (campos["area"],)).fetchone():
+                abort(400, "Essa área não está cadastrada.")
             if did:
+                visao.exigir_doc(con, did)
                 sets = ", ".join(f"{k}=?" for k in campos)
                 con.execute(f"UPDATE doc_documentos SET {sets}, atualizado_em=datetime('now','localtime') WHERE id=?", (*campos.values(), did))
             else:
@@ -327,6 +353,7 @@ def registrar_rotas(app, guarda, registrar, quem):
         if not ren:
             abort(400, "Informe a data da renovação.")
         with db.connect() as con:
+            visao.exigir_doc(con, did)
             doc = con.execute("SELECT * FROM doc_documentos WHERE id=?", (did,)).fetchone()
             if not doc:
                 abort(404)
@@ -355,6 +382,7 @@ def registrar_rotas(app, guarda, registrar, quem):
         if renovacao and not venc:
             abort(400, "Informe a nova data de vencimento.")
         with db.connect() as con:
+            visao.exigir_doc(con, did)
             doc = con.execute("SELECT * FROM doc_documentos WHERE id=?", (did,)).fetchone()
             if not doc:
                 abort(404)
@@ -371,9 +399,11 @@ def registrar_rotas(app, guarda, registrar, quem):
     def docs_baixar(aid):
         with db.connect() as con:
             a = con.execute("SELECT * FROM doc_anexos WHERE id=?", (aid,)).fetchone()
+            if a:
+                visao.exigir_doc(con, a["documento_id"])
         if not a or not a["arquivo"] or not (DOCS_DIR / a["arquivo"]).exists():
             abort(404, "Arquivo não encontrado.")
-        return send_file(DOCS_DIR / a["arquivo"], as_attachment=request.args.get("baixar") == "1", download_name=a["nome_original"])
+        return seguranca.enviar_anexo(DOCS_DIR / a["arquivo"], a["nome_original"], baixar=request.args.get("baixar") == "1")
 
     @app.delete("/api/docs/anexos/<int:aid>")
     @guarda
@@ -382,21 +412,23 @@ def registrar_rotas(app, guarda, registrar, quem):
             a = con.execute("SELECT * FROM doc_anexos WHERE id=?", (aid,)).fetchone()
             if not a:
                 abort(404)
+            visao.exigir_doc(con, a["documento_id"])
             con.execute("DELETE FROM doc_anexos WHERE id=?", (aid,))
             if a["data_renovacao"]:
                 recalcular(con, a["documento_id"])
         if a["arquivo"]:
-            (DOCS_DIR / a["arquivo"]).unlink(missing_ok=True)
+            lixeira.guardar(DOCS_DIR / a["arquivo"])
         return jsonify(ok=True)
 
     @app.delete("/api/docs/<int:did>")
     @guarda
     def docs_excluir(did):
         with db.connect() as con:
+            visao.exigir_doc(con, did)
             arqs = [r["arquivo"] for r in con.execute("SELECT arquivo FROM doc_anexos WHERE documento_id=?", (did,))]
             con.execute("DELETE FROM doc_anexos WHERE documento_id=?", (did,))
             con.execute("DELETE FROM doc_documentos WHERE id=?", (did,))
         for a in arqs:
             if a:
-                (DOCS_DIR / a).unlink(missing_ok=True)
+                lixeira.guardar(DOCS_DIR / a)
         return jsonify(ok=True)

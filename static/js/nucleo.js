@@ -256,6 +256,7 @@ App.modal = function (conteudo) {
   const caixa = m.querySelector(".modal__caixa");
   if (tit) { tit.id = "modal-titulo"; caixa.setAttribute("aria-labelledby", "modal-titulo"); } else caixa.removeAttribute("aria-labelledby");
   m.hidden = false;
+  caixa.scrollTop = 0;   // a caixa é a mesma entre janelas: não herda a rolagem da anterior
   const f = corpo.querySelector("input:not([type=hidden]):not([hidden]), select, textarea, button, [tabindex]:not([tabindex='-1'])");
   setTimeout(() => (f || caixa).focus(), 30);
   return () => App.fecharModal();
@@ -439,19 +440,19 @@ App.barraFiltros = function (onChange, opcoes = {}) {
     campoComp = el("div", { class: "campo" }, el("span", {}, "Componentes (nenhum = todos)"), el("div", { class: "chips" }, chipsComp));
   }
 
-  return el("div", { class: "filtros" },
+  return App.filtrosEnxutos(el("div", { class: "filtros" },
     el("label", { class: "campo" }, el("span", {}, "Período"), el("div", { class: "presets" }, de, ate)),
     el("div", { class: "campo" }, el("span", {}, "Atalhos"), el("div", { class: "presets" }, btnsPreset)),
     el("div", { class: "campo" }, el("span", {}, "Categoria"), el("div", { class: "chips" }, chips)),
     campoComp,
     el("label", { class: "campo" }, el("span", {}, "Gênero"), genero),
     el("label", { class: "campo campo--cresce" }, el("span", {}, "Busca"), el("div", { class: "busca" }, busca)),
-    limpar);
+    limpar));
 };
 
 /* ------------------------------------------------------------------ padrão das páginas
    Todas as telas seguem a mesma ordem:
-   1. cabeçalho: título + descrição | à direita: Exportar (PDF ou Excel) · Importar Excel · Baixar modelo Excel · ações da tela · botão principal
+   1. cabeçalho: título + descrição | à direita: botão principal primeiro · Exportar · "Mais ações" (App.organizarAcoes). Antes: Exportar · Importar Excel · Baixar modelo Excel · ações da tela · botão principal
    2. avisos (faixas coloridas)
    3. cartão de filtros: campos · Busca (sempre por último, ocupa o resto) · Limpar filtros
    4. números (KPIs)
@@ -472,6 +473,14 @@ App.filtrosComEvento = function (eventoId, seletor, limparEv, barra) {
   f.prepend(campoEv);
   return f;
 };
+/** Menu suspenso aberto: encosta do lado que couber, para nunca sair da tela nem criar rolagem lateral. */
+App.menuNaTela = function (menu) {
+  menu.style.left = menu.style.right = "";
+  if (menu.hidden) return;
+  const r = menu.getBoundingClientRect();
+  if (r.right > document.documentElement.clientWidth - 8) { menu.style.left = "auto"; menu.style.right = "0"; }
+  else if (r.left < 8) { menu.style.left = "0"; menu.style.right = "auto"; }
+};
 /** Um botão "Exportar" só, com as opções PDF (relatório da tela) e Excel (dados da tela). */
 App.botaoExportar = function () {
   const xl = App.exportarExcel;
@@ -482,7 +491,7 @@ App.botaoExportar = function () {
   // uma ou várias opções de Excel: { titulo?, rotulo, url | () => url }
   (Array.isArray(xl) ? xl : xl ? [xl] : []).forEach((x) =>
     menu.append(item(x.titulo || "Excel", x.rotulo, () => { location.href = typeof x.url === "function" ? x.url() : x.url; })));
-  const btn = el("button", { class: "btn btn--sec", "aria-haspopup": "menu", onclick: (ev) => { ev.stopPropagation(); menu.hidden = !menu.hidden; btn.setAttribute("aria-expanded", String(!menu.hidden)); if (!menu.hidden && ev.detail === 0) menu.querySelector("button")?.focus(); } }, "Exportar ", el("span", { class: "seta-menu" }, "▾"));
+  const btn = el("button", { class: "btn btn--sec", "aria-haspopup": "menu", onclick: (ev) => { ev.stopPropagation(); menu.hidden = !menu.hidden; App.menuNaTela(menu); btn.setAttribute("aria-expanded", String(!menu.hidden)); if (!menu.hidden && ev.detail === 0) menu.querySelector("button")?.focus(); } }, "Exportar ", el("span", { class: "seta-menu" }, "▾"));
   const caixa = el("div", { class: "exportar" }, btn, menu);
   document.addEventListener("click", (ev) => { if (!caixa.contains(ev.target)) menu.hidden = true; });
   return caixa;
@@ -492,8 +501,8 @@ App.campo = (rotulo, ...conteudo) => el("label", { class: "campo" }, el("span", 
 /** Cartão de filtros padrão: campos, busca por último e "Limpar filtros". */
 App.barraPadrao = function ({ campos = [], busca = null, rotuloBusca = "Busca", limpar = null } = {}) {
   const btn = limpar ? el("button", { class: "btn btn--linha btn--mini limpar", onclick: limpar }, "Limpar filtros") : null;
-  return el("div", { class: "filtros" }, ...campos.filter(Boolean),
-    busca ? el("label", { class: "campo campo--cresce" }, el("span", {}, rotuloBusca), el("div", { class: "busca" }, busca)) : null, btn);
+  return App.filtrosEnxutos(el("div", { class: "filtros" }, ...campos.filter(Boolean),
+    busca ? el("label", { class: "campo campo--cresce" }, el("span", {}, rotuloBusca), el("div", { class: "busca" }, busca)) : null, btn));
 };
 
 /* ------------------------------------------------------------------ seletor de evento (com busca) */
@@ -697,14 +706,13 @@ App.media = (arr, f) => (arr.length ? App.soma(arr, f) / arr.length : 0);
 
 /* ------------------------------------------------------------------ modo edição */
 App.atualizarCadeado = function () {
-  const { editavel, protegido, local, login_logado, usuario, admin } = App.meta;
+  const { editavel, local, admin } = App.meta;
   const b = document.getElementById("btn-cadeado"), selo = document.getElementById("selo-modo");
-  selo.textContent = usuario ? `${usuario.nome}` : editavel ? (local ? "Edição (este computador)" : "Edição liberada") : "Somente visualização";
+  selo.textContent = editavel ? (local ? "Edição (este computador)" : "Edição liberada") : "Somente visualização";
   selo.className = "selo-modo" + (editavel ? " selo-modo--editar" : "");
-  selo.style.cursor = usuario ? "pointer" : "default";
-  selo.title = usuario ? "Trocar minha senha" : "";
-  selo.onclick = usuario ? App.trocarMinhaSenha : null;
-  b.hidden = false;
+  // quem entrou vê a foto (leva ao perfil); visitante continua com o selo e o botão "Entrar na conta"
+  selo.hidden = b.hidden = App.temPerfil();
+  App.desenharAvatar();
   b.textContent = App.meta.visitante ? "Entrar na conta" : "Sair";
   b.title = App.meta.visitante ? "Entrar com sua conta da equipe para editar" : "Sair e voltar para a tela inicial";
   document.querySelectorAll("[data-editor]").forEach((x) => (x.hidden = !editavel));
@@ -713,21 +721,63 @@ App.atualizarCadeado = function () {
   document.querySelectorAll(".so-editor").forEach((x) => (editavel ? x.removeAttribute("data-bloqueado") : x.setAttribute("data-bloqueado", "")));
 };
 
+/** Módulos na ordem do menu (o servidor manda em ordem alfabética das chaves). */
+App.guiasEmOrdem = (lista) => ["relatorio", "nf", "docs", "budget", "sup"].filter((g) => lista.includes(g));
+
+/** Todos veem o Relatório de eventos; quem não tem a guia marcada na conta vê sem os botões de edição. */
+App.ajustarEdicao = function (guia) {
+  App.meta.editavel = App.meta.editavel_modulos && (guia !== "relatorio" || App.meta.edita_relatorio);
+};
+
+App.temPerfil = () => !App.meta.visitante && App.jaEntrou();
+App.nomePerfil = () => (App.meta.usuario ? App.meta.usuario.nome : App.meta.entrou_local ? "PC do site" : "Edição por senha");
+
+/** Foto de quem entrou; sem foto (ou se ela não abrir), as iniciais do nome. */
+App.elFoto = function () {
+  const iniciais = () => {
+    const p = App.nomePerfil().trim().split(/\s+/);
+    return el("span", { class: "avatar__iniciais" }, (p[0][0] + (p.length > 1 ? p[p.length - 1][0] : "")).toUpperCase());
+  };
+  if (!App.meta.foto) return iniciais();
+  const img = el("img", { src: App.meta.foto, alt: "", width: 256, height: 256 });
+  img.onerror = () => img.replaceWith(iniciais());
+  return img;
+};
+
+App.desenharAvatar = function () {
+  const a = document.getElementById("btn-perfil"), n = App.meta.admin ? App.meta.pendentes || 0 : 0;
+  a.hidden = !App.temPerfil();
+  if (a.hidden) return;
+  const rotulo = `Abrir meu perfil (${App.nomePerfil()})` + (n ? `: ${n} solicitação(ões) pendente(s)` : "");
+  a.setAttribute("aria-label", rotulo);
+  a.title = rotulo;
+  App.limpar(a).append(App.elFoto(), n ? el("span", { class: "abas__badge avatar__badge" }, String(n)) : "");
+};
+
+App.atualizarPendentes = async function () {
+  if (!App.meta || !App.meta.admin || document.hidden) return;
+  try {
+    App.meta.pendentes = (await App.api("/api/solicitacoes/pendentes")).pendentes;
+    App.desenharAvatar();
+  } catch (e) { /* tenta de novo no próximo ciclo */ }
+};
+
 /** Menu: mostra só as abas da área atual (Relatório de eventos ou Notas fiscais) que a pessoa pode ver.
  *  Quem tem as duas áreas ganha o seletor de área no começo do menu. */
 App.areaAtual = "relatorio";
 App.atualizarMenu = function (rota, sub) {
   const m = App.meta || {};
   const guias = (m.acessos || []).length ? m.acessos : ["relatorio"];
-  if (rota) App.areaAtual = ["nf", "docs", "budget", "sup"].includes(rota) ? rota : rota === "equipe" ? App.areaAtual : "relatorio";
+  if (rota) App.areaAtual = ["nf", "docs", "budget", "sup"].includes(rota) ? rota : rota === "perfil" ? App.areaAtual : "relatorio";
   if (!guias.includes(App.areaAtual)) App.areaAtual = guias[0];
   const area = App.areaAtual;
   const areas = document.getElementById("areas");
   areas.querySelectorAll("a").forEach((a) => { a.classList.toggle("ativa", a.dataset.areaBtn === area); a.hidden = !guias.includes(a.dataset.areaBtn); });
   const nomeArea = areas.querySelector(`a[data-area-btn="${area}"] b`);
-  document.getElementById("area-nome").textContent = rota === "equipe" ? "Equipe e acessos" : (nomeArea ? nomeArea.firstChild.textContent.trim() : "");
+  document.getElementById("area-nome").textContent = rota === "perfil" ? "Meu perfil" : (nomeArea ? nomeArea.firstChild.textContent.trim() : "");
+  if (rota !== undefined) App._rotaMenu = rota;
   document.querySelectorAll("#abas > a[data-guia]").forEach((a) => {
-    a.hidden = a.dataset.guia !== area || !guias.includes(a.dataset.guia) || (a.hasAttribute("data-editor") && !m.editavel);
+    a.hidden = App._rotaMenu === "perfil" || a.dataset.guia !== area || !guias.includes(a.dataset.guia) || (a.hasAttribute("data-editor") && !m.editavel) || (a.hasAttribute("data-so-visitante") && !m.visitante);
   });
   if (rota !== undefined) {
     document.querySelectorAll("#abas > a[data-rota]").forEach((a) =>
@@ -746,7 +796,10 @@ App.gaveta = (abrir) => {
 };
 document.addEventListener("click", (e) => {
   if (e.target.closest("#btn-menu")) App.gaveta(document.getElementById("gaveta").hidden);
-  else if (e.target.closest("[data-fechar-gaveta]")) { App.gaveta(false); document.getElementById("btn-menu").focus(); }
+  else if (e.target.closest("[data-fechar-gaveta]")) {
+    App.gaveta(false); document.getElementById("btn-menu").focus();
+    if (e.target.closest("[data-ajuda-teclado]")) App.ajudaTeclado();
+  }
   else if (e.target.closest("#gaveta a")) App.gaveta(false);
 });
 
@@ -859,6 +912,11 @@ App.alternarEdicao = async function () {
   const eraVisitante = App.meta.visitante;
   try { await App.api("/api/logout", { method: "POST" }); } catch (e) { /* ok */ }
   App.meta = await App.api("/api/meta");
+  // a página anterior não fica para trás da tela inicial; o tema de jogo também não (rotear refaz os dois ao entrar)
+  App.destruirGraficos();
+  App.limpar(document.getElementById("app"));
+  App.aplicarTema(false);
+  if (location.hash.startsWith("#/perfil")) history.replaceState(null, "", "#/visao");   // quem entrar depois começa pelo início
   await App.telaEntrada(eraVisitante ? "login" : null);
   App.atualizarCadeado();
   if ((App.meta.acessos || []).includes("docs") && App.docs) App.docs.carregar().catch(() => {});
@@ -898,15 +956,18 @@ App.telaEntrada = (modoInicial = null) => new Promise((resolve) => {
   const btnConta = el("button", { class: "entrada__opcao entrada__opcao--principal", type: "button" },
     el("span", { class: "entrada__icone" }, svg(icChave)),
     el("span", {}, el("b", {}, "Entrar na conta"), el("small", {}, "Equipe de Engenharia: cadastrar eventos, anexar planilhas e editar dados.")));
+  const btnPedir = el("button", { class: "entrada__opcao", type: "button" },
+    el("span", { class: "entrada__icone" }, svg('<circle cx="10" cy="8" r="4"/><path d="M3 21a7 7 0 0 1 12.5-4.3M18 14v6M15 17h6"/>')),
+    el("span", {}, el("b", {}, "Solicitar acesso"), el("small", {}, "Ainda não tem conta? Peça ao administrador.")));
   const escolha = el("div", { class: "entrada__escolha" },
     el("h2", {}, "Como você quer acessar?"),
     el("p", { class: "entrada__sub" }, "Escolha uma opção para continuar."),
-    btnVisitante, btnConta);
+    btnVisitante, btnConta, btnPedir);
 
   /* ---- formulário de login */
   const comContas = m.tem_contas;
-  const u = el("input", { type: "text", autocomplete: "username", placeholder: "seu usuário" });
-  const s = el("input", { type: "password", autocomplete: "current-password", placeholder: "sua senha" });
+  const u = el("input", { type: "text", name: "usuario", autocomplete: "username", autocapitalize: "off", spellcheck: "false", placeholder: "seu usuário…" });
+  const s = el("input", { type: "password", name: "senha", autocomplete: "current-password", placeholder: "sua senha…" });
   const msg = el("p", { class: "entrada__erro", role: "alert" });
   const btnEntrar = el("button", { class: "btn entrada__entrar", type: "submit" }, "Entrar");
   const btnLocal = m.local ? el("button", { class: "btn btn--linha entrada__entrar", type: "button" }, "Entrar como administrador deste computador") : null;
@@ -921,7 +982,42 @@ App.telaEntrada = (modoInicial = null) => new Promise((resolve) => {
     msg,
     comContas || m.senha_unica ? btnEntrar : null,
     btnLocal,
-    m.local ? el("p", { class: "entrada__nota" }, "Você está no computador onde o site roda: aqui dá para entrar direto como administrador.") : null);
+    m.local ? el("p", { class: "entrada__nota" }, "Você está no computador onde o site roda: aqui dá para entrar direto como administrador.") : null,
+    el("button", { class: "entrada__voltar", type: "button", onclick: () => mostrar("pedido") }, "Não tem conta? Solicitar acesso"));
+
+  /* ---- pedido de login: o administrador recebe no perfil */
+  const pNome = el("input", { type: "text", name: "nome", autocomplete: "name", maxlength: 120, placeholder: "seu nome…" });
+  const pContato = el("input", { type: "text", name: "contato", autocomplete: "email", maxlength: 120, placeholder: "e-mail ou telefone…" });
+  const pMotivo = el("textarea", { name: "motivo", rows: 2, maxlength: 500, placeholder: "para que você precisa do acesso…" });
+  const pModulos = App.guiasEmOrdem(Object.keys(m.guias || {})).map((g) => {
+    const c = el("input", { type: "checkbox", value: g });
+    return { c, linha: el("label", {}, c, el("span", {}, m.guias[g])) };
+  });
+  const pMsg = el("p", { class: "entrada__erro", role: "alert" });
+  const pBtn = el("button", { class: "btn entrada__entrar", type: "submit" }, "Enviar pedido");
+  const pCampos = el("div", {},
+    el("p", { class: "entrada__sub" }, "O administrador recebe o pedido e passa o usuário e a senha para você."),
+    App.progressoForm([{ rotulo: "nome", ok: () => !!pNome.value.trim() }, { rotulo: "contato", ok: () => !!pContato.value.trim() },
+      { rotulo: "módulo", ok: () => pModulos.some((x) => x.c.checked) }]),
+    el("label", { class: "campo" }, el("span", {}, "Nome"), pNome),
+    el("label", { class: "campo" }, el("span", {}, "Contato"), pContato),
+    el("div", { class: "campo" }, el("span", {}, "Módulos"), el("div", { class: "acessos-lista" }, pModulos.map((x) => x.linha))),
+    el("label", { class: "campo" }, el("span", {}, "Motivo (opcional)"), pMotivo),
+    pMsg, pBtn);
+  const pFim = el("div", { hidden: true }, el("div", { class: "entrada__sucesso", role: "status" }, el("b", {}, "✓ Pedido enviado"),
+    el("p", { class: "entrada__sub" }, "O administrador recebe o aviso e fala com você pelo contato informado. Enquanto isso, você já pode ver os relatórios como visitante.")));
+  const pedido = el("form", { class: "entrada__form", hidden: true },
+    el("button", { class: "entrada__voltar", type: "button", onclick: () => mostrar("escolha") }, "← Voltar"),
+    el("h2", {}, "Solicitar acesso"), pCampos, pFim);
+  pedido.onsubmit = async (ev) => {
+    ev.preventDefault();
+    pBtn.disabled = true; pMsg.textContent = "";
+    try {
+      await App.api("/api/solicitacoes/login", { method: "POST", json: { nome: pNome.value, contato: pContato.value, motivo: pMotivo.value, modulos: pModulos.filter((x) => x.c.checked).map((x) => x.c.value) } });
+      pCampos.hidden = true; pFim.hidden = false;
+    } catch (e) { pMsg.textContent = e.message; }
+    pBtn.disabled = false;
+  };
   form.onsubmit = async (ev) => {
     ev.preventDefault();
     btnEntrar.disabled = true; msg.textContent = "";
@@ -935,15 +1031,18 @@ App.telaEntrada = (modoInicial = null) => new Promise((resolve) => {
   if (btnLocal) btnLocal.onclick = async () => { await App.api("/api/entrar-local", { method: "POST" }); App.toast("Entrou como administrador deste computador."); await fechar(); };
   btnVisitante.onclick = async () => { await App.api("/api/visitante", { method: "POST" }); await fechar(); };
   btnConta.onclick = () => mostrar("login");
+  btnPedir.onclick = () => mostrar("pedido");
 
   const mostrar = (qual) => {
     escolha.hidden = qual !== "escolha";
     form.hidden = qual !== "login";
+    pedido.hidden = qual !== "pedido";
     msg.textContent = "";
     if (qual === "login") setTimeout(() => (comContas ? u : (m.senha_unica ? s : btnLocal))?.focus(), 30);
+    if (qual === "pedido") setTimeout(() => pNome.focus(), 30);
   };
 
-  /* ---- landing page: o que é a Central, módulos, como funciona, dúvidas (o acesso fica no topo, ao lado do título) */
+  /* ---- landing page: o que é a Central, módulos, destaques e dúvidas (o acesso fica no topo, ao lado do título) */
   const ic = {
     eventos: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
     manut: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
@@ -960,20 +1059,17 @@ App.telaEntrada = (modoInicial = null) => new Promise((resolve) => {
     ["nf", "Notas fiscais e contratos", "Medições, saldo de cada contrato, prazos das notas e alertas de vencimento."],
     ["budget", "Budget", "Solicitado, aprovado e incorrido por projeto, centro de custo e classe financeira."],
     ["sup", "Suprimentos", "Rateio das contas de energia, água, gás e poço entre locatários, eventos e Engenharia."],
-    ["docs", "Documentos", "Licenças e laudos do parque com aviso antes de vencer."],
+    ["docs", "Documentos", "Licenças e laudos da arena com aviso antes de vencer."],
   ];
   const faq = [
     ["Quem pode acessar?", "Qualquer pessoa com o link entra como visitante e vê relatórios e gráficos, sem alterar nada. Para cadastrar e editar, é preciso uma conta da equipe de Engenharia."],
     ["Preciso instalar alguma coisa?", "Não. A Central abre no navegador do computador ou do celular."],
     ["Os dados são confidenciais?", "Sim. É uma ferramenta de uso interno: não compartilhe o link fora da empresa nem tire prints de valores de contrato."],
-    ["Como peço uma conta?", "Fale com o administrador da Central na Engenharia & Infraestrutura. Ele cria o seu usuário e define o que você pode ver e editar."],
+    ["Como peço uma conta?", "Clique em Solicitar acesso, no início desta página, e informe seu nome, um contato e os módulos que precisa. O administrador recebe o pedido, cria o seu usuário e define o que você pode ver e editar."],
     ["Encontrei um número estranho. E agora?", "Use o botão ? do gráfico ou da coluna para ver como o valor é calculado. Se ainda parecer errado, avise o administrador com a tela e o mês."],
   ];
   const sec = (id, titulo, sub, ...filhos) => el("section", { class: "lp-sec", id, tabindex: "-1", "aria-labelledby": id + "-t" },
     el("div", { class: "lp-sec__cab" }, el("h2", { id: id + "-t" }, titulo), sub ? el("p", {}, sub) : null), ...filhos);
-  const ctas = (classe = "") => el("div", { class: "lp-ctas " + classe },
-    el("button", { class: "btn lp-btn", type: "button", onclick: irAcesso("login") }, "Entrar na conta"),
-    el("button", { class: "btn btn--linha lp-btn", type: "button", onclick: () => btnVisitante.click() }, "Ver como visitante"));
 
   const tela = el("div", { class: "entrada" },
     el("a", { class: "lp-pular", href: "#lp-acesso", onclick: irPara("lp-acesso") }, "Pular para o acesso"),
@@ -981,7 +1077,6 @@ App.telaEntrada = (modoInicial = null) => new Promise((resolve) => {
       el("span", { class: "lp-topo__marca" }, el("b", {}, m.titulo || "Central de Engenharia"), el("span", {}, m.setor || "Engenharia & Infraestrutura")),
       el("nav", { class: "lp-topo__nav", "aria-label": "Seções da página" },
         el("a", { href: "#lp-modulos", onclick: irPara("lp-modulos") }, "Módulos"),
-        el("a", { href: "#lp-como", onclick: irPara("lp-como") }, "Como funciona"),
         el("a", { href: "#lp-faq", onclick: irPara("lp-faq") }, "Dúvidas")),
       el("button", { class: "btn lp-topo__entrar", type: "button", onclick: irAcesso("login") }, "Entrar")),
     el("main", { class: "lp", id: "lp-conteudo" },
@@ -993,21 +1088,10 @@ App.telaEntrada = (modoInicial = null) => new Promise((resolve) => {
             el("p", {}, "Custos de eventos, contratos, budget e contas de consumo atualizados, com gráficos prontos e Excel com fórmulas em um clique.")),
           barras()),
         el("section", { class: "entrada__painel", id: "lp-acesso", tabindex: "-1", "aria-label": "Acesso à Central" },
-          el("div", { class: "entrada__caixa" }, escolha, form))),
-      sec("lp-antes", "Do jeito antigo para a Central", "O mesmo trabalho, sem caçar planilha.",
-        el("div", { class: "lp-antes" },
-          el("div", { class: "lp-antes__col lp-antes__col--antes" }, el("h3", {}, "Antes"),
-            el("ul", {}, ["Planilhas soltas em várias pastas", "Power BI atualizado à mão", "Rateio e saldo calculados na calculadora", "Número sem explicação de onde veio"].map((t) => el("li", {}, t)))),
-          el("div", { class: "lp-antes__col lp-antes__col--agora" }, el("h3", {}, "Com a Central"),
-            el("ul", {}, ["Tudo num só lugar, pelo navegador", "Gráficos atualizados ao anexar a planilha", "Rateio, saldo e budget calculados sozinhos", "Botão ? explica cada número e coluna"].map((t) => el("li", {}, t)))))),
+          el("div", { class: "entrada__caixa" }, escolha, form, pedido))),
       sec("lp-modulos", "Módulos", "Seis áreas que conversam entre si: a conta de consumo do Suprimentos, por exemplo, já entra no Budget.",
         el("ul", { class: "lp-modulos" }, modulos.map(([k, t, d]) => el("li", { class: "lp-card" },
           el("span", { class: "entrada__icone" }, svg(ic[k])), el("h3", {}, t), el("p", {}, d))))),
-      sec("lp-como", "Como funciona", "Três passos, do arquivo ao relatório.",
-        el("ol", { class: "lp-passos" },
-          el("li", {}, el("b", {}, "Anexe a planilha"), el("span", {}, "Arraste o relatório do evento, a NF ou a conta do mês para a área de importação.")),
-          el("li", {}, el("b", {}, "A Central calcula"), el("span", {}, "Custos, médias, rateio, saldos e prazos saem prontos, com o cálculo explicado no ?.")),
-          el("li", {}, el("b", {}, "Veja e exporte"), el("span", {}, "Filtre, compare e baixe o Excel com fórmulas para mandar adiante.")))),
       sec("lp-destaques", "Feito para o dia a dia", null,
         el("ul", { class: "lp-destaques" }, [
           ["Navegador e celular", "Nada para instalar; funciona no computador e no telefone."],
@@ -1016,10 +1100,7 @@ App.telaEntrada = (modoInicial = null) => new Promise((resolve) => {
           ["Quem mudou o quê", "Contas por pessoa e histórico de alterações."],
         ].map(([t, d]) => el("li", {}, el("b", {}, t), el("span", {}, d))))),
       sec("lp-faq", "Dúvidas frequentes", null,
-        el("div", { class: "lp-faq" }, faq.map(([q, r]) => el("details", {}, el("summary", {}, q), el("p", {}, r))))),
-      el("section", { class: "lp-final", "aria-labelledby": "lp-final-t" },
-        el("h2", { id: "lp-final-t" }, "Pronto para parar de procurar planilha?"),
-        el("p", {}, "Entre com a sua conta ou veja os relatórios como visitante."), ctas("lp-ctas--claro"))),
+        el("div", { class: "lp-faq" }, faq.map(([q, r]) => el("details", {}, el("summary", {}, q), el("p", {}, r)))))),
     el("footer", { class: "lp-rodape" },
       el("span", {}, `${m.setor || "Engenharia & Infraestrutura"} · Arena Demo`), el("span", {}, "Uso interno")));
   // enquanto a página inicial está aberta, o site por trás não recebe foco nem leitor de tela
@@ -1062,7 +1143,7 @@ App.trocarMinhaSenha = function () {
   App.modal(el("div", {}, el("h3", {}, "Trocar minha senha"),
     el("div", { class: "grade", style: { gap: "10px" } },
       el("label", { class: "campo" }, el("span", {}, "Senha atual"), atual),
-      el("label", { class: "campo" }, el("span", {}, "Nova senha (mín. 6 caracteres)"), nova),
+      el("label", { class: "campo" }, el("span", {}, "Nova senha (mín. 8 caracteres)"), nova),
       el("label", { class: "campo" }, el("span", {}, "Repita a nova senha"), conf)), msg,
     el("div", { class: "linha-acoes" }, el("button", {
       class: "btn", onclick: async () => {

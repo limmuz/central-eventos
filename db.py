@@ -182,10 +182,33 @@ CREATE INDEX IF NOT EXISTS ix_itens_tipo ON itens(tipo);
 CREATE INDEX IF NOT EXISTS ix_anexos_evento ON anexos(evento_id);
 CREATE INDEX IF NOT EXISTS ix_historico_quando ON historico(id);
 CREATE INDEX IF NOT EXISTS ix_itens_evento ON itens(evento_id);
+CREATE TABLE IF NOT EXISTS solicitacoes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    tipo          TEXT NOT NULL,                     -- login | modulo
+    usuario_id    INTEGER,                           -- pedido de módulo: quem pediu
+    nome          TEXT,
+    contato       TEXT,
+    modulos       TEXT NOT NULL DEFAULT '[]',
+    motivo        TEXT DEFAULT '',
+    situacao      TEXT NOT NULL DEFAULT 'pendente',  -- pendente | aprovada | recusada
+    ip            TEXT DEFAULT '',
+    criado_em     TEXT DEFAULT (datetime('now','localtime')),
+    resolvido_em  TEXT,
+    resolvido_por TEXT
+);
+
+CREATE TABLE IF NOT EXISTS areas (
+    id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome  TEXT NOT NULL UNIQUE
+);
+
 CREATE INDEX IF NOT EXISTS ix_relogios_evento ON relogios(evento_id);
 CREATE INDEX IF NOT EXISTS ix_chamados_evento ON chamados(evento_id);
 CREATE INDEX IF NOT EXISTS ix_energia_evento ON energia_hora(evento_id);
 """
+
+
+ao_conectar = None   # lixeira.preparar: anota o que uma exclusão apaga
 
 
 def connect():
@@ -199,6 +222,8 @@ def connect():
     # de rede, e o modo WAL do SQLite não funciona em pasta de rede.)
     con.execute("PRAGMA cache_size = -16000")
     con.execute("PRAGMA temp_store = MEMORY")
+    if ao_conectar:
+        ao_conectar(con)
     return con
 
 
@@ -206,13 +231,39 @@ SIGLAS_PADRAO = {"OP": "OPERADOR", "E": "ELÉTRICA", "EL": "ELEVADOR", "ER": "ES
                  "AC": "AR CONDICIONADO", "H": "HIDRÁULICA", "C": "CIVIL"}
 
 
+def _copia_antes_de_migrar():
+    """Banco de uma versão anterior (sem a coluna de área): guarda uma cópia antes de alterar qualquer coisa."""
+    if not DB_PATH.exists():
+        return
+    with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=30) as ro:
+        cols = [r[1] for r in ro.execute("PRAGMA table_info(usuarios)")]
+    if cols and "area" not in cols:
+        import datetime as dt
+        destino = DATA_DIR / f"relatorio.antes_da_atualizacao_{dt.date.today():%Y-%m-%d}.db"
+        if not destino.exists():
+            with sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=30) as ro, sqlite3.connect(destino) as bk:
+                ro.backup(bk)
+
+
 def init():
+    _copia_antes_de_migrar()
     with connect() as con:
         con.executescript(SCHEMA)
         # contas antigas: guias liberadas para cada pessoa (padrão = só o relatório pós-evento)
         cols = [r[1] for r in con.execute("PRAGMA table_info(usuarios)")]
         if "acessos" not in cols:
             con.execute("ALTER TABLE usuarios ADD COLUMN acessos TEXT DEFAULT '[\"relatorio\"]'")
+        # visão de Budget e Notas fiscais por conta (NULL = tudo)
+        if "visao" not in cols:
+            con.execute("ALTER TABLE usuarios ADD COLUMN visao TEXT")
+        # área de cada conta (separa os Documentos). Contas que já existiam entram em Engenharia, como os documentos antigos.
+        if not con.execute("SELECT 1 FROM areas LIMIT 1").fetchone():
+            con.executemany("INSERT INTO areas(nome) VALUES (?)", [("ENGENHARIA",), ("OPERAÇÕES",), ("SUSTENTABILIDADE",)])
+        if "area" not in cols:
+            con.execute("ALTER TABLE usuarios ADD COLUMN area TEXT DEFAULT ''")
+            con.execute("UPDATE usuarios SET area='ENGENHARIA'")
+        if "ip" not in [r[1] for r in con.execute("PRAGMA table_info(historico)")]:
+            con.execute("ALTER TABLE historico ADD COLUMN ip TEXT DEFAULT ''")
         # dias úteis da medição ficam gravados (o site não recalcula tudo a cada consulta)
         if "busca" not in [r[1] for r in con.execute("PRAGMA table_info(nf_medicoes)")]:
             con.execute("ALTER TABLE nf_medicoes ADD COLUMN busca TEXT DEFAULT ''")   # texto sem acento p/ a busca
@@ -231,3 +282,14 @@ def init():
 
 def rows(cur):
     return [dict(r) for r in cur.fetchall()]
+
+
+def criar_indices():
+    """Índices das consultas mais pesadas (só aceleram, não mudam dados). Rodar depois que todos os módulos criaram as tabelas."""
+    with connect() as con:
+        for nome, tabela, colunas in (("ix_med_pedido", "nf_medicoes", "pedido_id"), ("ix_med_item", "nf_medicoes", "budget_item_id"),
+                                      ("ix_nf_rateio_item", "nf_rateio", "item_id"), ("ix_previsto_item", "bud_previsto", "item_id, ano")):
+            try:
+                con.execute(f"CREATE INDEX IF NOT EXISTS {nome} ON {tabela}({colunas})")
+            except sqlite3.OperationalError:
+                pass   # tabela ainda não existe nesta versão

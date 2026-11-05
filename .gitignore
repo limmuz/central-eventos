@@ -9,6 +9,7 @@ config.json
 *.xlsm
 *.pdf
 !docs/*.png
+!modelos/*.xlsx
 
 # Python
 __pycache__/

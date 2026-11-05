@@ -75,7 +75,7 @@ App.nf.camposFiltro = function (aoMudar, { rotuloData = "Período", semClasse = 
   if (comBase) {
     const selBase = el("select", {}, App.nf.BASES.map(([v, r]) => el("option", { value: v, selected: (f.base || "") === v }, r)));
     selBase.onchange = () => { f.base = selBase.value; App.nf.salvarFc(); aoMudar(); };
-    campos.splice(1, 0, App.campo("Período pela", selBase));
+    campos.push(App.campo("Período pela", selBase));   // ajuste fino: fica em "Mais filtros"
   }
   if (!semClasse) {
     const C = (App.bud.base && App.bud.base.cadastros) || { centros: [], projetos: [] };
@@ -110,23 +110,49 @@ App.nf.diasUteis = function (ini, fim) {
   return n ? sinal * (n - 1) : 0;
 };
 
-/** Baixa o .eml (o Outlook abre como e-mail novo, já com destinatários, texto e NF). */
-App.nf.baixarEmail = async function (url) {
-  const r = await fetch(`${url}?hora=${new Date().getHours()}`);
-  if (!r.ok) {
-    let msg = `Erro ${r.status}`;
-    try { msg = (await r.json()).erro || msg; } catch (e) { /* ok */ }
-    App.toast(msg, true); return false;
-  }
-  const blob = await r.blob();
-  const cd = r.headers.get("content-disposition") || "";
-  const m = cd.match(/filename\*=UTF-8''([^;]+)/i) || cd.match(/filename="?([^";]+)"?/i);
-  const a = el("a", { href: URL.createObjectURL(blob), download: m ? decodeURIComponent(m[1]) : "email.eml" });
-  document.body.append(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-  if (r.headers.get("X-Com-Anexo") === "0") App.toast("E-mail gerado SEM a NF anexada: o arquivo não foi encontrado. Anexe a NF na medição.", true);
-  else App.toast("E-mail gerado: abra o arquivo baixado, confira e envie pelo Outlook.");
-  return true;
+/** Janela do e-mail: baixa o .eml já com destinatários, texto e anexo, que abre no novo Outlook para conferir e enviar.
+    Abrir sem o arquivo (link do Outlook, aplicativo padrão) fica em "Outros jeitos": esses caminhos não aceitam anexo.
+    Resolve true ao fechar; false se pediu para parar (e-mails em lote). */
+App.nf.baixarEmail = async function (url, { lote = "" } = {}) {
+  const base = `${url}?hora=${new Date().getHours()}`;
+  const r = await fetch(`${base}&modo=dados`);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { App.toast(d.erro || `Erro ${r.status}`, true); return false; }
+  const q = (o) => Object.entries(o).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+  const virgula = (t) => (t || "").split(/[;,]/).map((x) => x.trim()).filter(Boolean).join(",");
+  const campos = { to: virgula(d.para), cc: virgula(d.cc), bcc: virgula(d.cco), subject: d.assunto };
+  const textoCabe = encodeURIComponent(d.texto).length < 5500;   // endereço muito longo é cortado pelo navegador
+  const web = `https://outlook.office.com/mail/deeplink/compose?${q({ ...campos, body: textoCabe ? d.texto : "" })}`;
+  const mailto = `mailto:${campos.to}?${q({ cc: campos.cc, bcc: campos.bcc, subject: campos.subject, body: textoCabe ? d.texto : "" })}`;
+  const copiar = (t, aviso) => async () => { try { await navigator.clipboard.writeText(t); App.toast(aviso); } catch (e) { App.toast("Não consegui copiar.", true); } };
+  const semArquivo = () => {
+    fetch(`${base}&modo=marcar`).catch(() => {});
+    if (d.anexo_url) { const a = el("a", { href: d.anexo_url, download: "" }); document.body.append(a); a.click(); a.remove(); }
+  };
+  const linha = (rot, v) => (v ? [el("dt", {}, rot), el("dd", {}, v)] : []);
+  return new Promise((res) => {
+    let parar = false;
+    const m = document.getElementById("modal");
+    App.modal(el("div", { class: "modal--largo" }, el("h3", {}, lote ? `E-mail ${lote}` : "Enviar e-mail"),
+      el("dl", { class: "perfil-dados" }, linha("Para", d.para || "nenhum: preencha no Outlook"), linha("Cc", d.cc), linha("Cco", d.cco), linha("Assunto", d.assunto)),
+      el("ol", { class: "email-passos" },
+        el("li", {}, el("b", {}, "Baixe o e-mail. "), d.com_anexo ? "Ele já vem preenchido e com a NF anexada." : "Ele já vem preenchido."),
+        el("li", {}, el("b", {}, "Abra o arquivo no novo Outlook. "), "Se abrir o Outlook antigo: botão direito no arquivo › Abrir com › Outlook (new)."),
+        el("li", {}, el("b", {}, "Confira e envie. "), "Se a assinatura não aparecer, use Inserir › Assinatura."),
+        d.com_anexo === false && url.includes("/medicoes/") ? el("li", { class: "email-aviso" }, "O arquivo da NF não foi encontrado: anexe manualmente.") : null),
+      el("div", { class: "linha-acoes" },
+        el("a", { class: "btn", href: base }, d.com_anexo ? "Baixar e-mail com a NF" : "Baixar e-mail"),
+        lote ? el("button", { class: "btn btn--linha", type: "button", onclick: () => { parar = true; App.fecharModal(); } }, "Parar aqui") : null,
+        el("button", { class: "btn btn--linha", type: "button", "data-fechar": "" }, lote ? "Próximo" : "Fechar")),
+      el("details", { class: "email-outros" }, el("summary", {}, "Outros jeitos de enviar"),
+        d.anexo_url ? el("p", { class: "ajuda" }, "Sem anexo automático: a NF é baixada para você anexar à mão.") : null,
+        el("div", { class: "linha-acoes" },
+          el("a", { class: "btn btn--linha", href: web, target: "_blank", rel: "noopener", onclick: semArquivo }, "Abrir no Outlook pela web"),
+          el("a", { class: "btn btn--linha", href: mailto, onclick: semArquivo, title: "Abre o aplicativo de e-mail padrão do computador" }, "Abrir no aplicativo padrão"),
+          el("button", { class: "btn btn--linha", type: "button", onclick: copiar(d.texto, "Texto copiado.") }, "Copiar texto")))));
+    const obs = new MutationObserver(() => { if (m.hidden) { obs.disconnect(); res(!parar); } });
+    obs.observe(m, { attributes: true, attributeFilter: ["hidden"] });
+  });
 };
 
 const nfEtiquetaSla = (m) => m.dias_uteis === null || m.dias_uteis === undefined ? el("span", { class: "etiqueta" }, "—")
@@ -361,15 +387,15 @@ App.nf.pedidosDoPdf = async function (pdfs) {
 };
 
 /* importar: a mesma planilha única do site (também aceita a EnviarEmailNF antiga) */
-App.nf.botaoImportar = () => el("span", { style: { display: "inline-flex", gap: "8px", flexWrap: "wrap" } }, App.importacao.botoes());
+App.nf.botaoImportar = () => App.importacao.botoes();
 App.nf.botaoModelo = () => null;
 App.nf.importarPlanilha = (files) => App.importacao.importar(files);
 
 async function nfEmailsPendentes() {
   const d = await App.api("/api/nf/medicoes?email=pendente&por=500&ordem=medicao&dir=asc");
   if (!d.itens.length) { App.toast("Nenhum e-mail pendente."); return; }
-  if (!(await App.confirmar("Gerar e-mails pendentes", `Vou baixar ${d.itens.length} e-mail(s), um por medição. Se o navegador perguntar, permita baixar vários arquivos.`, "Gerar"))) return;
-  for (const m of d.itens) { await App.nf.baixarEmail(`/api/nf/medicoes/${m.id}/email`); await new Promise((r) => setTimeout(r, 400)); }
+  if (!(await App.confirmar("Gerar e-mails pendentes", `Vou abrir ${d.itens.length} e-mail(s), um por medição, para enviar pelo Outlook. Se o navegador perguntar, permita baixar vários arquivos.`, "Gerar"))) return;
+  for (const [i, m] of d.itens.entries()) { if (!(await App.nf.baixarEmail(`/api/nf/medicoes/${m.id}/email`, { lote: `${i + 1} de ${d.itens.length}` }))) break; }
   App.rotear();
 }
 
@@ -670,13 +696,19 @@ async function nfEditarMedicao(m) {
       }
       App.fecharModal();
       if (comEmail) await App.nf.baixarEmail(`/api/nf/medicoes/${d.id}/email`);
-      else App.toast("Medição salva.");
+      else App.toast(novo ? "Medição lançada." : "Medição salva.", false, novo ? { acao: { rotulo: "Lançar outra", fazer: () => nfEditarMedicao({}) } } : {});
       App.rotear();
     } catch (e) { msg.textContent = e.message; }
   };
   const ultimoEnvio = m.email_gerado_em ? (m.email_gerado_em === "planilha" ? "pela planilha antiga" : `em ${App.fmt.data(m.email_gerado_em.slice(0, 10))} às ${m.email_gerado_em.slice(11, 16)}`) : "";
   App.modal(el("div", { class: "modal--largo" }, el("h3", {}, novo ? "Nova medição" : `Editar medição ${m.numero_medicao || ""} · NF ${m.numero_documento || ""}`),
     ultimoEnvio ? el("p", { class: "ajuda", style: { marginTop: 0 } }, `E-mail enviado ${ultimoEnvio}.`) : null,
+    App.progressoForm([
+      { rotulo: "nº da NF", ok: () => !!numDoc.value.trim() },
+      { rotulo: modo === "pedido" ? "pedido" : "contrato ou pedido", ok: () => (modo === "contrato" ? !!contrato.value : !!pedidoInp.value.trim()) },
+      { rotulo: "emissão", ok: () => !!emissao.value },
+      { rotulo: "valor", ok: () => !!valor.value },
+    ]),
     el("div", { class: "grade-form" },
       el("label", { class: "campo" }, el("span", {}, "Nº da medição"), numMed),
       el("label", { class: "campo" }, el("span", {}, "Nº do documento (NF)"), numDoc),
@@ -811,6 +843,7 @@ async function nfEditarContrato(c) {
   atualizarResumo();
   const msg = el("p", { class: "ajuda", style: { color: "var(--perigo)", minHeight: "18px" } });
   App.modal(el("div", { class: "modal--largo" }, el("h3", {}, novo ? "Novo contrato" : `Contrato ${c.numero}`), lista,
+    App.progressoForm([{ rotulo: "nº do contrato", ok: () => !!numero.value.trim() }, { rotulo: "fornecedor", ok: () => !!forn.value.trim() }]),
     novo ? null : nfAlertasContrato(c),
     el("div", { class: "grade-form" },
       el("label", { class: "campo" }, el("span", {}, "Nº do contrato"), numero),
@@ -967,6 +1000,7 @@ async function nfPrazos(corpo) {
         { rotulo: "Data", valor: (f) => f.data, render: (f) => App.fmt.data(f.data) },
         { rotulo: "Descrição", valor: (f) => f.descricao, render: (f) => f.descricao || "—" },
         { rotulo: "", render: (f) => el("button", { class: "btn btn--mini btn--linha", title: "Excluir", onclick: async () => {
+          if (!(await App.confirmar("Excluir feriado", `Excluir o feriado de ${App.fmt.data(f.data)}?`, "Excluir"))) return;
           await App.api(`/api/nf/feriados/${f.data}`, { method: "DELETE" }); App.rotear();
         } }, "✕") },
       ], feriados, { ordem: { i: 0, dir: -1 }, vazio: "Nenhum feriado no período." })))));

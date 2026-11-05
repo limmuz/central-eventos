@@ -39,8 +39,9 @@ App.paginas.evento = async function (raiz, params) {
       App.btnEditor("Editar dados", () => (location.hash = `#/cadastro/${e.id}`), "btn btn--linha")],
   }));
 
-  /* ---- KPIs (mesma ordem do relatório original) */
+  /* ---- KPIs: custo total primeiro; depois a ordem do relatório original */
   corpo.append(el("div", { class: "kpis" },
+    App.kpi("Custo total", App.fmt.brlCurto(e.total), "core", `MDO ${App.fmt.brlCurto(e.mdo)} · Avarias ${App.fmt.brlCurto(e.avarias)}`),
     App.kpi("Água", App.fmt.brlCurto(e.agua), "p100", e.irrigacao || e.irrigacao_consumo
       ? el("span", {}, consumo(e, "ÁGUA", "m³"), el("br"), `dos quais irrigação do gramado ${App.fmt.brlCurto(e.irrigacao)}${e.irrigacao_consumo ? ` · ${App.fmt.num(e.irrigacao_consumo)} m³` : ""}`)
       : consumo(e, "ÁGUA", "m³")),
@@ -48,8 +49,7 @@ App.paginas.evento = async function (raiz, params) {
     App.kpi("Gás", App.fmt.brlCurto(e.gas), "p100", consumo(e, "GÁS", "m³")),
     App.kpi("Poço artesiano", App.fmt.brlCurto(e.poco), "g200", consumo(e, "POÇO", "m³")),
     App.kpi("Técnicos transporte vertical", App.fmt.num(e.tecnicos_tv), "p900", `MDO · ${App.fmt.brlCurto(e.tecnicos_tv_valor)}`),
-    App.kpi("Técnico de medição acústica", App.fmt.num(e.acustica), "p900", `MDO · ${App.fmt.brlCurto(e.acustica_valor)}`),
-    App.kpi("Custo total", App.fmt.brlCurto(e.total), "core", `MDO ${App.fmt.brlCurto(e.mdo)} · Avarias ${App.fmt.brlCurto(e.avarias)}`)));
+    App.kpi("Técnico de medição acústica", App.fmt.num(e.acustica), "p900", `MDO · ${App.fmt.brlCurto(e.acustica_valor)}`)));
 
   /* ---- composição + energia por hora */
   const partes = [

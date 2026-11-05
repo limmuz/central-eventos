@@ -50,7 +50,7 @@ Embaixo aparece o % da nota que ficou com a Engenharia. Para mudar este valor, a
 O valor lançado aparece no Budget como incorrido do tipo “CONSUMO”, no mês da conta. Só a parte da Engenharia vai para o budget; o que foi cobrado das áreas não.
 
 Linha marcada em vermelho = não está no budget do ano (o valor não é somado lá).`,
-  colLinha: `Quem paga: locatário, evento, área do parque ou a própria Engenharia.
+  colLinha: `Quem paga: locatário, evento, área da arena ou a própria Engenharia.
 
 Embaixo: o centro de custo (CC) e o projeto que recebem o valor na planilha do Suprimentos. Linha sem código sai na planilha sem o CC / projeto: abra a linha e escolha.`,
   colRateioU: (u) => `**Quanto esta linha paga da conta de ${u} (R$), já com desconto.**
@@ -185,7 +185,7 @@ Componentes:
 Tamanho da barra = soma dos componentes escolhidos no filtro. Clique numa barra para abrir o evento. Use “Top” e “Ordem” para mudar quantos e em que ordem aparecem.`],
   ["Média por gênero", `**Custo médio por evento de cada gênero** (soma do custo dos eventos do gênero ÷ número de eventos do gênero), nos componentes escolhidos. A cor é a categoria mais comum naquele gênero. Serve para estimar o custo de um evento novo do mesmo tipo.`],
   ["Média por categoria", `**Custo médio por evento de cada categoria (Show, Jogo, etc.), separado por componente.** Cada barra = soma do componente nos eventos da categoria ÷ número de eventos da categoria. Os quadros embaixo mostram a média total de cada categoria.`],
-  ["Custo por mês", `**Soma do custo de todos os eventos de cada mês**, por componente. Mostra em que meses o parque gastou mais com eventos. O número em cima da barra é o total do mês.`],
+  ["Custo por mês", `**Soma do custo de todos os eventos de cada mês**, por componente. Mostra em que meses a arena gastou mais com eventos. O número em cima da barra é o total do mês.`],
   ["Medidores de consumo", `**Valor médio de cada medidor (R$) por evento, separado por categoria.** Só entram os eventos que têm leitura de medidor. Nos jogos, a irrigação do gramado já está dentro da água (não soma à parte; jogos a partir de out/2026).`],
   ["Eventos", () => _pag() === "sup" ? "" : `Lista dos eventos do filtro com o custo de cada componente e o total (soma dos componentes escolhidos). Clique no título da coluna para ordenar e na linha para abrir o evento.`],
 
@@ -285,7 +285,7 @@ Clique na classe para ver os meses e, no mês, cada lançamento.`],
   ["Classes financeiras", `Classes financeiras cadastradas (nº e descrição): dizem em que tipo de gasto cada valor entra no budget.`],
 
   /* ---------- Documentos */
-  ["Documentos", `**Documentos legais e certificações do parque** (AVCB, alvarás, laudos…), um por linha.
+  ["Documentos", `**Documentos legais e certificações da arena** (AVCB, alvarás, laudos…), um por linha.
 
 - Última renovação: a data mais recente da lista de renovações do documento.
 - Próximo vencimento: última renovação + periodicidade (anual, semestral, a cada 2 anos…).
@@ -300,7 +300,15 @@ Para renovar: botão **Renovar** > acrescente uma linha com a data (o arquivo é
   ["Exportar Excel (base do Power BI)", `Baixa a base completa (eventos, itens, medidores, chamados) em Excel, no formato que o Power BI lê.`],
   ["Como ligar o Power BI no novo Excel", `Passo a passo para apontar o Power BI para o Excel exportado.`],
   ["Reorganizar planilhas anexadas", `Confere todos os anexos de uma vez e coloca cada um no evento certo, pelo nome do arquivo.`],
-  ["Contas", `Pessoas com acesso ao site e o perfil de cada uma (administrador ou editor). Clique para editar ou desativar.`],
+  ["Minha foto", `Sua foto aparece no topo do site sempre que você entra. O site recorta o centro da imagem e reduz o tamanho. Sem foto, aparecem as iniciais do seu nome.`],
+  ["Minha conta", `Seus dados e os módulos liberados para você. Para ter outros módulos, use Solicitar acesso. **Visão** (quando aparece): os centros de custo e projetos que você enxerga em Budget e Notas fiscais.`],
+  ["Pedir acesso a outros módulos", `Marque os módulos que você precisa e envie. O administrador recebe o pedido e, ao aprovar, eles entram na sua conta. Módulos que você já tem ou já pediu não aparecem aqui.`],
+  ["Meus pedidos", `Os pedidos que você fez e a resposta do administrador: Pendente, Aprovada ou Recusada. Depois de aprovado, recarregue a página para ver o módulo no menu.`],
+  ["Pedidos de login", `Pessoas sem conta que pediram acesso na tela inicial. **Aprovar** abre a janela de nova conta preenchida: ao salvar, a conta é criada e o site mostra os dados para você passar à pessoa pelo contato informado. **Recusar** só marca o pedido, porque o site não envia e-mail.`],
+  ["Pedidos de módulos", `Contas que pediram acesso a outros módulos no perfil. **Aprovar** soma os módulos à conta na hora. **Recusar** só marca o pedido, e a pessoa vê a resposta no perfil dela.`],
+  ["Exclusões", `Tudo o que foi excluído no site, por qualquer pessoa, fica aqui por 90 dias. **Desfazer** devolve o registro e o que caiu junto (itens do evento, linhas do pedido) e os arquivos anexados. Só o administrador vê esta tela. Se já existir outro registro com o mesmo número, o site avisa e nada é alterado.`],
+  ["Áreas", `As áreas separam os **Documentos**: cada pessoa vê só os da própria área, e o documento que ela cria fica nessa área. O administrador vê todos. Renomear uma área atualiza as contas e os documentos dela. Só dá para excluir a área que não está em uso.`],
+  ["Contas", `Pessoas com acesso ao site e o perfil de cada uma (administrador ou editor). Clique para editar ou desativar. **Visão**: o que a pessoa enxerga em Budget e Notas fiscais, Tudo ou só os centros de custo e projetos marcados na conta.`],
   ["Histórico de alterações", `Registro de quem fez o quê e quando (últimas 300 alterações).`],
   ["Itens", `Catálogo de itens (MDO, avarias, insumos) com valor unitário padrão, usado na leitura dos relatórios.`],
   ["Siglas de área (CHAMADOS CCO)", `Siglas usadas na planilha de chamados do CCO e a área que cada uma representa.`],

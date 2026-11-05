@@ -19,6 +19,7 @@ import budget
 import docs
 import exporter
 import importer
+import visao
 
 LINHAS = 500          # linhas já preparadas (fórmulas e listas) em cada guia
 MAX_LISTA = 3000      # tamanho máximo das listas
@@ -199,12 +200,13 @@ def gerar_modelo(con, acessos):
         "L_PROJETO": [[p["nome"], p["descricao"] or "", p["centro_custo"] or ""] for p in cad["projetos"]],
         "L_CLASSE": [[c["numero"], c["descricao"] or ""] for c in cad["classes"]],
         "L_CONTRATO": _contratos_lista(con),
-        "L_PEDIDO": [[r["numero"], r["fornecedor"] or ""] for r in con.execute("SELECT numero, fornecedor FROM bud_pedidos ORDER BY data_emissao DESC, id DESC")],
+        "L_PEDIDO": [[r["numero"], r["fornecedor"] or ""] for r in con.execute(
+            f"SELECT p.numero, p.fornecedor FROM bud_pedidos p LEFT JOIN bud_itens i ON i.id = p.item_id WHERE {visao.cond_pedido()[0]} ORDER BY p.data_emissao DESC, p.id DESC", visao.cond_pedido()[1])],
         "L_MOTIVO": [[m] for m in budget.MOTIVOS],
         "L_STATUS_NF": [["ENVIADO"], ["PENDENTE"], ["CANCELADA"]],
         "L_STATUS_PEDIDO": [["ATIVO"], ["CANCELADO"]],
         "L_SIMNAO": [["SIM"], ["NÃO"]],
-        "L_CAT_DOC": [[c] for c in sorted({r[0] for r in con.execute("SELECT categoria FROM doc_documentos WHERE categoria<>''")}
+        "L_CAT_DOC": [[c] for c in sorted({r[0] for r in con.execute(f"SELECT categoria FROM doc_documentos d WHERE categoria<>'' AND {visao.cond_doc('d')[0]}", visao.cond_doc("d")[1])}
                                           | set(docs.CATEGORIAS_PADRAO))] if _tem_tabela(con, "doc_documentos") else [[c] for c in docs.CATEGORIAS_PADRAO],
     }
     cab_fill = PatternFill("solid", fgColor=exporter.ROXO)
@@ -286,7 +288,7 @@ def gerar_modelo(con, acessos):
                 if l["aprovado"] is not None:
                     wsd.cell(k, 9, l["aprovado"])
         if nome == "DOCUMENTOS" and _tem_tabela(con, "doc_documentos"):   # já vem com os documentos do site: é só atualizar as datas
-            for k, r in enumerate(con.execute("SELECT * FROM doc_documentos WHERE arquivado=0 ORDER BY categoria, nome").fetchall()[:LINHAS], 5):
+            for k, r in enumerate(con.execute(f"SELECT * FROM doc_documentos d WHERE arquivado=0 AND {visao.cond_doc('d')[0]} ORDER BY categoria, nome", visao.cond_doc("d")[1]).fetchall()[:LINHAS], 5):
                 for j, v in enumerate([r["nome"], r["categoria"], r["numero"], r["orgao"], r["responsavel"],
                                        _data(r["data_renovacao"]), _data(r["data_vencimento"]),
                                        r["aviso_dias"], r["observacao"]], 1):
@@ -302,8 +304,9 @@ def _contratos_lista(con):
     """Contratos para a guia LISTAS, com a classe que as medições de cada um recebem automaticamente:
     uma linha (ou todas as linhas com a mesma classe) -> essa classe; várias classes ou nenhuma -> aviso para informar à mão."""
     out = []
-    for c in con.execute("""SELECT c.id, c.numero, c.fornecedor, bi.classe_numero, bi.classe_descricao
-                            FROM nf_contratos c LEFT JOIN bud_itens bi ON bi.id = c.budget_item_id ORDER BY c.finalizado, c.numero"""):
+    cond_v, par_v = visao.cond_contrato()
+    for c in con.execute(f"""SELECT c.id, c.numero, c.fornecedor, bi.classe_numero, bi.classe_descricao
+                            FROM nf_contratos c LEFT JOIN bud_itens bi ON bi.id = c.budget_item_id WHERE {cond_v} ORDER BY c.finalizado, c.numero""", par_v):
         linhas = con.execute("""SELECT i.budget_item_id, bi.classe_numero, bi.classe_descricao, bi.projeto FROM nf_contrato_itens i
                                 LEFT JOIN bud_itens bi ON bi.id = i.budget_item_id WHERE i.contrato_id=?""", (c["id"],)).fetchall()
         bids = {l["budget_item_id"] for l in linhas}

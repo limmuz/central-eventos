@@ -10,7 +10,7 @@ Regras (as mesmas da planilha EnviarEmailNF, com os números ajustáveis na aba 
 - SLA de recebimento: a NF foi emitida até o prazo de recebimento do mês da emissão?
 - Contrato: saldo atual = (saldo contratado + aditivo) - medições (as canceladas não contam).
 - E-mails: o site gera um arquivo .eml já redigido (destinatários da aba Configurações e NF anexada).
-  Ao abrir, o Outlook mostra uma mensagem nova pronta para conferir e enviar.
+  Ao abrir no novo Outlook, a mensagem vem pronta para conferir e enviar, com o anexo.
 
 Desempenho: a lista de medições é filtrada, ordenada e paginada no banco; os gráficos e os totais
 dos contratos são somados com SQL (GROUP BY). Assim o site continua rápido com muitos anos de dados.
@@ -20,7 +20,8 @@ import mimetypes
 import uuid
 import email.policy
 from email.message import EmailMessage
-from email.utils import formatdate
+from email.utils import formatdate, make_msgid
+from html import escape
 from io import BytesIO
 from pathlib import Path
 
@@ -29,6 +30,9 @@ from werkzeug.utils import secure_filename
 
 import db
 import importer
+import lixeira
+import seguranca
+import visao
 
 STATUS = ("PROSSEGUIU", "PENDENTE", "CANCELADA")
 MESES = ["JANEIRO", "FEVEREIRO", "MARÇO", "ABRIL", "MAIO", "JUNHO", "JULHO", "AGOSTO",
@@ -138,14 +142,15 @@ def contratos(con, cfg=None):
     pct, valor_min, dias_alerta = cfg_num(cfg, "alerta_saldo_pct"), cfg_num(cfg, "alerta_saldo_valor"), cfg_num(cfg, "alerta_vencimento_dias")
     hoje = dt.date.today()
     lista = []
-    for r in con.execute("""
+    cond_v, par_v = visao.cond_contrato()
+    for r in con.execute(f"""
         SELECT c.*,
                COALESCE(SUM(CASE WHEN m.status<>'CANCELADA' THEN m.valor END), 0) AS total_utilizado,
                COUNT(CASE WHEN m.status<>'CANCELADA' THEN 1 END)                 AS n_medicoes,
                MAX(CASE WHEN m.status<>'CANCELADA' THEN m.data_medicao END)       AS ultima_medicao,
                (SELECT COUNT(*) FROM nf_contrato_itens ci WHERE ci.contrato_id = c.id) AS n_itens
         FROM nf_contratos c LEFT JOIN nf_medicoes m ON m.contrato_id = c.id
-        GROUP BY c.id ORDER BY c.finalizado, c.fornecedor"""):
+        WHERE {cond_v} GROUP BY c.id ORDER BY c.finalizado, c.fornecedor""", par_v):
         c = dict(r)
         c["total_utilizado"] = round(c["total_utilizado"], 2)
         c["total_contratado"] = round((c["saldo_contratado"] or 0) + (c["aditivo"] or 0), 2)
@@ -257,7 +262,8 @@ def medicoes(con, args):
     """Lista paginada + totais do filtro (tudo calculado no banco)."""
     cfg = config(con)
     sla = int(cfg_num(cfg, "sla_dias_uteis"))
-    onde, par = ["1=1"], []
+    cond_v, par_v = visao.cond_medicao()
+    onde, par = [cond_v], list(par_v)
     ref = _ref(args)
     ref_bud = REF_DATAS["medicao"]          # o budget conta a medição no ano da data da medição
     if args.get("de"):
@@ -305,7 +311,7 @@ def medicoes(con, args):
     if args.get("ate"):
         per.append(f"{ref} <= ?"); ppar.append(args["ate"])
     sc = con.execute(f"""SELECT COUNT(*) AS n, SUM(COALESCE(cn.n,0) > 1) AS multi, COALESCE(SUM(m.valor),0) AS valor
-        {_FROM} WHERE bi.id IS NULL AND m.status<>'CANCELADA' {''.join(' AND ' + x for x in per)}""", ppar).fetchone()
+        {_FROM} WHERE bi.id IS NULL AND m.status<>'CANCELADA' AND {cond_v} {''.join(' AND ' + x for x in per)}""", [*par_v, *ppar]).fetchone()
     kpis = {x: (k[x] or 0) for x in k.keys()}
 
     ordem = ORDENS.get(args.get("ordem"), "m.data_medicao")
@@ -316,13 +322,14 @@ def medicoes(con, args):
     itens = [dict(r) for r in con.execute(
         f"SELECT {_sql_campos(sla)} {_FROM}{where} ORDER BY {ordem} {direcao}, m.id DESC LIMIT ? OFFSET ?",
         (*par, por, (pagina - 1) * por))]
-    pend = con.execute("SELECT COUNT(*) FROM nf_medicoes WHERE status='PROSSEGUIU' AND email_gerado_em=''").fetchone()[0]
+    pend = con.execute(f"SELECT COUNT(*) {_FROM} WHERE m.status='PROSSEGUIU' AND m.email_gerado_em='' AND {cond_v}", par_v).fetchone()[0]
     return {"itens": itens, "total": kpis["n"], "pagina": pagina, "paginas": paginas, "por": por, "kpis": kpis,
             "pendentes_email": pend, "sem_classe": {"n": sc["n"] or 0, "multi": sc["multi"] or 0, "valor": sc["valor"] or 0}}
 
 
 def medicao(con, mid):
     sla = int(cfg_num(config(con), "sla_dias_uteis"))
+    visao.exigir_medicao(con, mid)
     r = con.execute(f"SELECT {_sql_campos(sla)} {_FROM} WHERE m.id=?", (mid,)).fetchone()
     if not r:
         abort(404)
@@ -333,7 +340,8 @@ def graficos(con, args):
     """Números dos gráficos, somados no banco."""
     sla = int(cfg_num(config(con), "sla_dias_uteis"))
     ref = _ref(args)
-    onde, par = ["m.status<>'CANCELADA'"], []
+    cond_v, par_v = visao.cond_medicao()
+    onde, par = ["m.status<>'CANCELADA'", cond_v], list(par_v)
     if args.get("ano"):
         onde.append(f"substr({ref},1,4) = ?"); par.append(args["ano"])
     if args.get("fornecedor"):
@@ -367,9 +375,13 @@ def graficos(con, args):
     prazo_mes = {r["mes"]: dict(r) for r in con.execute(f"""
         SELECT substr(m.data_emissao,1,7) AS mes, COUNT(*) AS n, SUM(m.data_emissao <= p.prazo) AS ok
         {_FROM}{where} AND m.data_emissao<>'' GROUP BY 1""", par)}
-    anos = [r[0] for r in con.execute(f"SELECT DISTINCT substr({ref},1,4) FROM nf_medicoes m WHERE {ref}<>'' ORDER BY 1 DESC")]
-    fornecedores = [r[0] for r in con.execute("SELECT fornecedor FROM nf_contratos UNION SELECT fornecedor FROM bud_pedidos "
-                                              "WHERE id IN (SELECT pedido_id FROM nf_medicoes) ORDER BY 1") if r[0]]
+    if visao.atual() is None:
+        anos = [r[0] for r in con.execute(f"SELECT DISTINCT substr({ref},1,4) FROM nf_medicoes m WHERE {ref}<>'' ORDER BY 1 DESC")]
+        fornecedores = [r[0] for r in con.execute("SELECT fornecedor FROM nf_contratos UNION SELECT fornecedor FROM bud_pedidos "
+                                                  "WHERE id IN (SELECT pedido_id FROM nf_medicoes) ORDER BY 1") if r[0]]
+    else:   # visão restrita: só os anos e fornecedores do que a pessoa vê
+        anos = [r[0] for r in con.execute(f"SELECT DISTINCT substr({ref},1,4) {_FROM} WHERE {ref}<>'' AND {cond_v} ORDER BY 1 DESC", par_v)]
+        fornecedores = [r[0] for r in con.execute(f"SELECT DISTINCT COALESCE(c.fornecedor, pd.fornecedor) {_FROM} WHERE {cond_v} ORDER BY 1", par_v) if r[0]]
     return {"por_mes": por_mes, "prazo_mes": prazo_mes, "totais": {x: (t[x] or 0) for x in t.keys()}, "fornecedores_prazo": forn,
             "anos": anos, "fornecedores": fornecedores, "sla_dias": sla}
 
@@ -386,21 +398,26 @@ def _lista_emails(txt):
     return ", ".join(partes)
 
 
+def _html_email(corpo):
+    return ('<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body>'
+            f'<div style="font-family:Arial,Helvetica,sans-serif;font-size:15px;line-height:1.5;color:#1F1F1F;">{corpo}</div></body></html>')
+
+
 def _eml(assunto, html, texto, para="", cc="", cco="", anexo=None):
-    """Mensagem 'não enviada' (X-Unsent): o Outlook abre como e-mail novo, pronto para conferir e enviar."""
+    """Mensagem 'não enviada': o novo Outlook abre para editar e enviar, com o anexo, se X-Unsent for a 1ª linha e houver Message-ID.
+    Texto e HTML juntos (multipart/alternative) foi a montagem aprovada no teste com o novo Outlook."""
     msg = EmailMessage()
+    msg["X-Unsent"] = "1"
+    msg["Message-ID"] = make_msgid(domain="central-engenharia.local")
     msg["Subject"] = assunto
     msg["Date"] = formatdate(localtime=True)
-    msg["X-Unsent"] = "1"
     for cab, v in (("To", para), ("Cc", cc), ("Bcc", cco)):
         v = _lista_emails(v)
         if v:
             msg[cab] = v
     # base64 (e não quoted-printable): o Outlook mostrava "=" e "=A7" no lugar dos acentos e das quebras de linha
     msg.set_content(texto, charset="utf-8", cte="base64")
-    if not html.lstrip().lower().startswith("<html"):
-        html = f'<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body>{html}</body></html>'
-    msg.add_alternative(html, subtype="html", charset="utf-8", cte="base64")
+    msg.add_alternative(_html_email(html), subtype="html", charset="utf-8", cte="base64")
     if anexo:
         nome, dados = anexo
         tipo = mimetypes.guess_type(nome)[0] or "application/octet-stream"
@@ -420,17 +437,16 @@ def _arquivo_anexo(m):
         p = db.NF_DIR / m["anexo_arquivo"]
         if p.exists():
             return m["anexo_nome"] or p.name, p
-    if m["caminho_externo"]:
-        p = Path(m["caminho_externo"])
-        try:
-            if p.exists():
-                return p.name, p
-        except OSError:
-            pass
-    return None, None
+    p = seguranca.arquivo_externo(m["caminho_externo"])
+    return (p.name, p) if p else (None, None)
 
 
-def email_medicao(m, hora, cfg):
+def _dados_email(assunto, texto, para, cc, cco, com_anexo=False):
+    """Só para mostrar na janela e abrir sem o arquivo: destinatários, assunto e texto."""
+    return {"assunto": assunto, "texto": texto, "para": _lista_emails(para), "cc": _lista_emails(cc), "cco": _lista_emails(cco), "com_anexo": com_anexo}
+
+
+def email_medicao(m, hora, cfg, so_dados=False):
     venc = _d(m["data_vencimento"])
     dias = int(cfg_num(cfg, "dias_liberacao"))
     liberar = (venc - dt.timedelta(days=dias)).strftime("%d/%m/%Y") if venc else "[sem data de vencimento]"
@@ -441,44 +457,45 @@ def email_medicao(m, hora, cfg):
     ref = f"Medição {med}" if med else f"{rotulo_contr} {contr}"
     assunto = f"NF {nf} - {forn} | {ref}"
     html = (
-        "<div style='font-family:Arial;color:#333;'>"
         f"<p>{_saudacao(hora)}</p>"
-        f"<p>Segue Nota Fiscal <b>{nf}</b> referente {'à' if med else 'ao'} <b>{ref}</b>.</p>"
-        "<div style='background:#f8f9fa;padding:15px;border:1px solid #eee;margin:15px 0;border-left: 4px solid #3b82f6;'>"
-        f"<p style='margin: 5px 0;'><b>Fornecedor:</b> {forn}</p>"
-        f"<p style='margin: 5px 0;'><b>{rotulo_contr}:</b> {contr}</p>"
-        "</div>"
-        f"<p style='color: red;'><b>Por favor, liberar para o visualização do financeiro até {liberar}</b>.</p>"
-        "<p>Documento disponível em anexo para processamento.</p>"
-        "</div>")
+        f"<p>Segue Nota Fiscal <b>{escape(str(nf))}</b> referente {'à' if med else 'ao'} <b>{escape(ref)}</b>.</p>"
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;margin:16px 0;"><tr>'
+        '<td style="background-color:#F6EFFC;border-left:4px solid #8D0DE3;padding:12px 16px;">'
+        f'<p style="margin:4px 0;"><b>Fornecedor:</b> {escape(str(forn))}</p>'
+        f'<p style="margin:4px 0;"><b>{rotulo_contr}:</b> {escape(str(contr))}</p>'
+        "</td></tr></table>"
+        f'<p style="color:#C62828;"><b>Por favor, liberar para o visualização do financeiro até {liberar}</b>.</p>'
+        "<p>Documento disponível em anexo para processamento.</p>")
     texto = (f"{_saudacao(hora)}\n\nSegue Nota Fiscal {nf} referente {'à' if med else 'ao'} {ref}.\n\n"
              f"Fornecedor: {forn}\n{rotulo_contr}: {contr}\n\n"
              f"Por favor, liberar para o visualização do financeiro até {liberar}.\n\n"
              "Documento disponível em anexo para processamento.\n")
     nome, caminho = _arquivo_anexo(m)
+    if so_dados:
+        return _dados_email(assunto, texto, cfg["email_nf_para"], cfg["email_nf_cc"], cfg["email_nf_cco"], bool(caminho))
     anexo = (nome, caminho.read_bytes()) if caminho else None
     return assunto, _eml(assunto, html, texto, cfg["email_nf_para"], cfg["email_nf_cc"], cfg["email_nf_cco"], anexo), bool(anexo)
 
 
-def email_prazo(mes, prazo, hora, cfg):
+def email_prazo(mes, prazo, hora, cfg, so_dados=False):
     a, mm = mes.split("-")
     nome_mes = MESES[int(mm) - 1]
     assunto = f"Prazo para Recebimento de Notas Fiscais - {nome_mes}"
     p = _br(prazo)
     html = (
-        "<div style='font-family:Arial;color:#333; font-size: 14px;'>"
         f"<p>{_saudacao(hora, 2)}</p>"
         f"<p>Gostaríamos de informar que o prazo limite para o recebimento das notas fiscais referentes ao mês de <b>{nome_mes}</b> é até o dia <b>{p}</b>.</p>"
         "<p>Solicitamos gentilmente que o envio seja realizado dentro deste prazo estipulado. O cumprimento desta data é fundamental para garantirmos o nosso fluxo de processamento interno e os pagamentos nos prazos corretos.</p>"
         "<p>Caso a nota fiscal já tenha sido enviada, por gentileza, desconsiderar o lembrete.</p>"
-        "<p>Contamos com a colaboração de todos e ficamos à disposição em caso de dúvidas.</p>"
-        "</div>")
+        "<p>Contamos com a colaboração de todos e ficamos à disposição em caso de dúvidas.</p>")
     texto = (f"{_saudacao(hora, 2)}\n\nGostaríamos de informar que o prazo limite para o recebimento das notas fiscais "
              f"referentes ao mês de {nome_mes} é até o dia {p}.\n\n"
              "Solicitamos gentilmente que o envio seja realizado dentro deste prazo estipulado. O cumprimento desta data é "
              "fundamental para garantirmos o nosso fluxo de processamento interno e os pagamentos nos prazos corretos.\n\n"
              "Caso a nota fiscal já tenha sido enviada, por gentileza, desconsiderar o lembrete.\n\n"
              "Contamos com a colaboração de todos e ficamos à disposição em caso de dúvidas.\n")
+    if so_dados:
+        return _dados_email(assunto, texto, cfg["email_forn_para"], cfg["email_forn_cc"], cfg["email_forn_cco"])
     return assunto, _eml(assunto, html, texto, cfg["email_forn_para"], cfg["email_forn_cc"], cfg["email_forn_cco"])
 
 
@@ -1069,6 +1086,7 @@ def registrar_rotas(app, guarda, registrar):
             if outro and outro["id"] != d.get("id"):
                 return jsonify(erro=f"Já existe o contrato {numero}."), 409
             if d.get("id"):
+                visao.exigir_contrato(con, int(d["id"]), gravar=True)
                 con.execute("UPDATE nf_contratos SET numero=?, fornecedor=?, data_inicio=?, data_fim=?, saldo_contratado=?, "
                             "aditivo=?, finalizado=?, observacao=? WHERE id=?", (*campos, d["id"]))
                 atualizar_busca(con, contrato_id=d["id"])
@@ -1082,6 +1100,7 @@ def registrar_rotas(app, guarda, registrar):
     @guarda
     def nf_excluir_contrato(cid):
         with db.connect() as con:
+            visao.exigir_contrato(con, cid)
             n = con.execute("SELECT COUNT(*) FROM nf_medicoes WHERE contrato_id=?", (cid,)).fetchone()[0]
             if n:
                 return jsonify(erro=f"Este contrato tem {n} medição(ões). Marque como finalizado em vez de excluir."), 409
@@ -1094,6 +1113,9 @@ def registrar_rotas(app, guarda, registrar):
     def nf_salvar_medicao():
         f = request.form
         mid = int(f.get("id") or 0) or None
+        if mid:
+            with db.connect() as con:
+                visao.exigir_medicao(con, mid, gravar=True)
         status = importer.up(f.get("status")) or "PROSSEGUIU"
         if status not in STATUS:
             status = "PROSSEGUIU"
@@ -1151,12 +1173,13 @@ def registrar_rotas(app, guarda, registrar):
     @guarda
     def nf_excluir_medicao(mid):
         with db.connect() as con:
+            visao.exigir_medicao(con, mid)
             r = con.execute("SELECT anexo_arquivo FROM nf_medicoes WHERE id=?", (mid,)).fetchone()
             if not r:
                 abort(404)
             con.execute("DELETE FROM nf_medicoes WHERE id=?", (mid,))
         if r["anexo_arquivo"]:
-            (db.NF_DIR / r["anexo_arquivo"]).unlink(missing_ok=True)
+            lixeira.guardar(db.NF_DIR / r["anexo_arquivo"])
         return jsonify(ok=True)
 
     @app.post("/api/nf/medicoes/excluir")
@@ -1167,12 +1190,13 @@ def registrar_rotas(app, guarda, registrar):
         arquivos = []
         with db.connect() as con:
             for mid in ids:
+                visao.exigir_medicao(con, mid)
                 r = con.execute("SELECT anexo_arquivo FROM nf_medicoes WHERE id=?", (mid,)).fetchone()
                 if r and r["anexo_arquivo"]:
                     arquivos.append(r["anexo_arquivo"])
                 con.execute("DELETE FROM nf_medicoes WHERE id=?", (mid,))
         for a in arquivos:
-            (db.NF_DIR / a).unlink(missing_ok=True)
+            lixeira.guardar(db.NF_DIR / a)
         return jsonify(ok=True, n=len(ids))
 
     @app.get("/api/nf/medicoes/ids")
@@ -1197,7 +1221,7 @@ def registrar_rotas(app, guarda, registrar):
         nome, caminho = _arquivo_anexo(m)
         if not caminho:
             abort(404, "Arquivo da NF não encontrado (o caminho da planilha antiga pode ter mudado).")
-        return send_file(caminho, as_attachment=False, download_name=nome)
+        return seguranca.enviar_anexo(caminho, nome, baixar=request.args.get("baixar") == "1")
 
     @app.get("/api/nf/medicoes/<int:mid>/email")
     @guarda
@@ -1206,8 +1230,16 @@ def registrar_rotas(app, guarda, registrar):
         with db.connect() as con:
             m = medicao(con, mid)
             reenvio = bool(m["email_gerado_em"])
-            assunto, buf, com_anexo = email_medicao(m, hora, config(con))
+            modo = request.args.get("modo")
+            d = email_medicao(m, hora, config(con), so_dados=True) if modo else None
+            if modo == "dados":   # só preenche a janela: conta como gerado ao baixar ou abrir
+                return jsonify({**d, "anexo_url": f"/api/nf/medicoes/{mid}/anexo?baixar=1" if d["com_anexo"] else ""})
+            if not d:
+                assunto, buf, com_anexo = email_medicao(m, hora, config(con))
             con.execute("UPDATE nf_medicoes SET email_gerado_em=datetime('now','localtime') WHERE id=?", (mid,))
+        if d:   # o histórico grava em outra conexão: só depois de fechar esta
+            registrar("reenviou e-mail da NF" if reenvio else "gerou e-mail da NF", d["assunto"])
+            return jsonify(ok=True)
         registrar("reenviou e-mail da NF" if reenvio else "gerou e-mail da NF",
                   assunto + ("" if com_anexo else " (sem anexo: arquivo não encontrado)"))
         r = send_file(buf, as_attachment=True, download_name=_nome_arquivo(assunto), mimetype="message/rfc822")
@@ -1242,9 +1274,17 @@ def registrar_rotas(app, guarda, registrar):
             p = con.execute("SELECT * FROM nf_prazos WHERE mes=?", (mes,)).fetchone()
             if not p:
                 abort(404, "Cadastre o prazo desse mês primeiro.")
-            assunto, buf = email_prazo(p["mes"], p["prazo"], hora, config(con))
             reenvio = bool(p["email_gerado_em"])
+            modo = request.args.get("modo")
+            d = email_prazo(p["mes"], p["prazo"], hora, config(con), so_dados=True) if modo else None
+            if modo == "dados":
+                return jsonify({**d, "anexo_url": ""})
+            if not d:
+                assunto, buf = email_prazo(p["mes"], p["prazo"], hora, config(con))
             con.execute("UPDATE nf_prazos SET email_gerado_em=datetime('now','localtime') WHERE mes=?", (mes,))
+        if d:
+            registrar("reenviou e-mail de prazo das NFs" if reenvio else "gerou e-mail de prazo das NFs", d["assunto"])
+            return jsonify(ok=True)
         registrar("reenviou e-mail de prazo das NFs" if reenvio else "gerou e-mail de prazo das NFs", assunto)
         return send_file(buf, as_attachment=True, download_name=_nome_arquivo(assunto), mimetype="message/rfc822")
 
@@ -1276,10 +1316,12 @@ def registrar_rotas(app, guarda, registrar):
     def nf_pedidos():
         """Pedidos para escolher na medição: nº, fornecedor, valor e quanto já foi medido."""
         with db.connect() as con:
-            return jsonify([dict(r) for r in con.execute("""
+            cond_v, par_v = visao.cond_pedido()
+            return jsonify([dict(r) for r in con.execute(f"""
                 SELECT p.id, p.numero, p.fornecedor, p.valor, p.data_emissao, p.status, p.descricao,
                        (SELECT COALESCE(SUM(m.valor),0) FROM nf_medicoes m WHERE m.pedido_id=p.id AND m.status<>'CANCELADA') AS medido
-                FROM bud_pedidos p ORDER BY p.data_emissao DESC, p.id DESC LIMIT 5000""")])
+                FROM bud_pedidos p LEFT JOIN bud_itens i ON i.id = p.item_id WHERE {cond_v}
+                ORDER BY p.data_emissao DESC, p.id DESC LIMIT 5000""", par_v)])
 
     @app.post("/api/nf/pedido-pdf")
     @guarda

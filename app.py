@@ -1,8 +1,9 @@
 """Central de Engenharia — Engenharia & Infraestrutura (Arena Demo): Relatório de eventos e Notas fiscais.
 
 Rodar em modo desenvolvimento:   python app.py
-Rodar para a rede (recomendado): python servidor.py   (ou dê dois cliques em INICIAR_SITE.bat)
+Rodar para a rede (recomendado): python servidor.py   (ou dê dois cliques em iniciar.bat)
 """
+import hmac
 import json
 import re
 import os
@@ -11,7 +12,7 @@ import uuid
 from functools import wraps
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, request, send_file, send_from_directory, session
+from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -19,6 +20,8 @@ import calculos
 import db
 import exporter
 import importer
+import seguranca
+import visao
 
 BASE = Path(__file__).resolve().parent
 CONFIG_PATH = BASE / "config.json"
@@ -72,12 +75,25 @@ def acesso_local():
 
 def usuario_logado():
     """Conta da equipe logada nesta sessão (ou None). Conta desativada perde o acesso na hora."""
+    if "usuario_atual" in g:   # uma consulta por pedido: cada conexão pesa quando o banco está na pasta de rede
+        return g.usuario_atual
+    g.usuario_atual = _ler_usuario()
+    return g.usuario_atual
+
+
+def _ler_usuario():
     uid = session.get("uid")
     if not uid:
         return None
     with db.connect() as con:
-        u = con.execute("SELECT id, nome, login, perfil, acessos FROM usuarios WHERE id=? AND ativo=1", (uid,)).fetchone()
-    return dict(u) if u else None
+        u = con.execute("SELECT id, nome, login, perfil, acessos, visao, area, senha_hash FROM usuarios WHERE id=? AND ativo=1", (uid,)).fetchone()
+    if not u:
+        return None
+    u = dict(u)
+    hash_senha = u.pop("senha_hash")
+    if session.get("sv") and session["sv"] != hash_senha[-16:]:   # a senha mudou: sessões abertas em outros lugares caem
+        return None
+    return u
 
 
 def pode_editar():
@@ -93,6 +109,7 @@ def pode_editar():
 
 
 # Guias (áreas) do site. Cada conta da equipe tem acesso às guias marcadas na tela Equipe.
+SENHA_MIN = 8
 GUIAS = {"relatorio": "Relatório de eventos", "nf": "Notas fiscais", "docs": "Vencimento de documentos", "budget": "Budget",
          "sup": "Suprimentos (consumo)"}
 
@@ -106,14 +123,14 @@ def _lista_acessos(txt):
 
 
 def acessos():
-    """Guias que quem está usando o site pode ver/editar.
-    Visitante (ou quem ainda não entrou): só o relatório, em modo visualização.
-    PC do site, senha única e administradores: todas. Editor: as marcadas na conta."""
+    """Guias que quem está usando o site pode ver.
+    Relatório de eventos: todos, inclusive visitantes (editar depende de edita_relatorio).
+    PC do site, senha única e administradores: todas. Editor: o relatório + as marcadas na conta."""
     if session.get("visitante"):
         return ["relatorio"]
     u = usuario_logado()
     if u:
-        return list(GUIAS) if u["perfil"] == "admin" else _lista_acessos(u["acessos"])
+        return list(GUIAS) if u["perfil"] == "admin" else ["relatorio", *[g for g in _lista_acessos(u["acessos"]) if g != "relatorio"]]
     if pode_editar():                       # PC do site ou senha única
         return list(GUIAS)
     return ["relatorio"]
@@ -123,29 +140,71 @@ def tem_acesso(guia):
     return guia in acessos()
 
 
+def edita_relatorio():
+    """Todos veem o Relatório de eventos; editar continua dependendo da guia marcada na conta."""
+    if not pode_editar():
+        return False
+    u = usuario_logado()
+    return not u or u["perfil"] == "admin" or "relatorio" in _lista_acessos(u["acessos"])
+
+
+def _visao_da_sessao():
+    """Administrador e PC do site veem tudo; Editor, o que estiver na conta."""
+    u = usuario_logado()
+    return visao.ler(u["visao"]) if u and u["perfil"] != "admin" else None
+
+
+def _area_da_sessao():
+    """Área cujos documentos a pessoa vê: None = todas (administrador, PC do site, senha única); "" = conta sem área, nenhum."""
+    u = usuario_logado()
+    return (u["area"] or "") if u and u["perfil"] != "admin" else None
+
+
+visao.configurar(_visao_da_sessao, _area_da_sessao)
+
+
 def e_admin():
-    """Administra contas: quem está no PC do site ou conta com perfil admin."""
+    """Administra contas: conta com perfil admin ou o PC do site sem conta. Quem entrou com conta segue o perfil dela,
+    mesmo abrindo o site no PC do servidor (Editor continua Editor)."""
     if session.get("visitante"):
         return False
-    if acesso_local():
-        return True
     u = usuario_logado()
-    return bool(u and u["perfil"] == "admin")
+    return u["perfil"] == "admin" if u else acesso_local()
+
+
+def chave_foto():
+    """Nome do arquivo da foto de quem está usando o site: a conta ou o PC do site (que não tem conta)."""
+    if session.get("visitante"):
+        return None
+    u = usuario_logado()
+    if u:
+        return str(u["id"])
+    return "local" if session.get("local_ok") and acesso_local() else None
+
+
+def logado():
+    """Entrou como conta, PC do site ou senha única (visitante e quem ainda não entrou ficam de fora)."""
+    return bool(chave_foto()) or (session.get("editor") is True and not session.get("visitante"))
 
 
 def quem():
     u = usuario_logado()
     if u:
         return u["nome"]
-    return "PC do site" if acesso_local() else "senha única"
+    if session.get("editor") is True:
+        return "senha única"
+    return "PC do site" if acesso_local() else "sem login"
 
 
 def registrar(acao, detalhe=""):
     try:
         with db.connect() as con:
-            con.execute("INSERT INTO historico(usuario, acao, detalhe) VALUES (?,?,?)", (quem(), acao, detalhe[:500]))
+            con.execute("INSERT INTO historico(usuario, acao, detalhe, ip) VALUES (?,?,?,?)", (quem(), acao, detalhe[:500], seguranca.ip_cliente()))
     except Exception:
         pass
+
+
+seguranca.instalar(app, quem)
 
 
 ACOES = {"POST": "incluiu", "PUT": "alterou", "DELETE": "excluiu"}
@@ -156,8 +215,8 @@ def requer_edicao(f):
     def w(*a, **k):
         if not pode_editar():
             return jsonify(erro="Acesso somente para visualização. Entre com sua conta da equipe para editar."), 403
-        if not tem_acesso("relatorio"):
-            return jsonify(erro="Sua conta não tem acesso para editar o Relatório de eventos."), 403
+        if not edita_relatorio():
+            return jsonify(erro="Sua conta pode ver o Relatório de eventos, mas não editar. Peça o acesso em Meu perfil."), 403
         resp = f(*a, **k)
         status = resp[1] if isinstance(resp, tuple) else getattr(resp, "status_code", 200)
         if status < 400:
@@ -190,7 +249,7 @@ def requer_admin(f):
     @wraps(f)
     def w(*a, **k):
         if not e_admin():
-            return jsonify(erro="Só o administrador pode gerenciar a equipe."), 403
+            return jsonify(erro="Só o administrador pode fazer isso."), 403
         return f(*a, **k)
     return w
 
@@ -249,13 +308,14 @@ def meta():
         q = lambda s: [r[0] for r in con.execute(s) if r[0]]
         return jsonify(
             titulo=CFG["titulo"], setor=CFG["setor"],
-            editavel=pode_editar(), protegido=bool(CFG.get("senha_edicao")) or _tem_contas(),
+            editavel=pode_editar(), editavel_modulos=pode_editar(), edita_relatorio=edita_relatorio(), protegido=bool(CFG.get("senha_edicao")) or _tem_contas(),
             local=acesso_local(), login_logado=bool(usuario_logado()) or session.get("editor") is True,
             acessos=acessos(), guias=GUIAS,
             visitante=bool(session.get("visitante")), entrou_local=bool(session.get("local_ok")) and acesso_local(),
             senha_unica=bool(CFG.get("senha_edicao")),
-            usuario=usuario_logado(), admin=e_admin(),
+            usuario=usuario_logado(), admin=e_admin(), visao=visao.atual(), area=visao.area_docs(),
             tem_contas=_tem_contas(),
+            foto=mod_perfil.foto_url(chave_foto()), pendentes=mod_perfil.pendentes(con) if e_admin() else 0,
             categorias=q("SELECT DISTINCT categoria FROM eventos ORDER BY 1"),
             generos=q("SELECT DISTINCT genero FROM eventos ORDER BY 1"),
             tipos_chamado=q("SELECT DISTINCT tipo FROM chamados ORDER BY 1"),
@@ -270,36 +330,48 @@ def _tem_contas():
         return bool(con.execute("SELECT 1 FROM usuarios WHERE ativo=1 LIMIT 1").fetchone())
 
 
+_HASH_FALSO = generate_password_hash(secrets.token_hex(16))
+
+
 @app.post("/api/login")
 def login():
     d = body()
     usuario, senha = (d.get("login") or "").strip().lower(), d.get("senha") or ""
+    if seguranca.login_bloqueado(usuario):
+        seguranca.auditoria(f"LOGIN BLOQUEADO | {usuario}")
+        return jsonify(erro="Muitas tentativas erradas. Aguarde 15 minutos ou fale com o administrador."), 429
     if usuario:
         with db.connect() as con:
             u = con.execute("SELECT * FROM usuarios WHERE login=? AND ativo=1", (usuario,)).fetchone()
-            if u and check_password_hash(u["senha_hash"], senha):
+            # sem conta também confere um hash: o tempo de resposta não revela quais usuários existem
+            ok = check_password_hash(u["senha_hash"] if u else _HASH_FALSO, senha) and bool(u)
+            if ok:
                 session.clear()
                 session.permanent = True
                 session["uid"] = u["id"]
+                session["sv"] = u["senha_hash"][-16:]
+                g.pop("usuario_atual", None)
                 con.execute("UPDATE usuarios SET ultimo_acesso=datetime('now','localtime') WHERE id=?", (u["id"],))
                 nome = u["nome"]
-            else:
-                nome = None
-        if nome:
+        if ok:
+            seguranca.login_ok(usuario)
             registrar("entrou no site")
             return jsonify(ok=True, nome=nome)
-        return jsonify(erro="Usuário ou senha incorretos."), 401
     # modo antigo: senha única do config.json
-    if CFG.get("senha_edicao") and senha == CFG["senha_edicao"]:
+    elif CFG.get("senha_edicao") and hmac.compare_digest(senha.encode(), str(CFG["senha_edicao"]).encode()):
         session.permanent = True
         session["editor"] = True
         return jsonify(ok=True)
+    seguranca.login_falhou(usuario)
+    seguranca.auditoria(f"LOGIN FALHOU | {usuario}")
+    registrar("falhou ao entrar", usuario[:80])
     return jsonify(erro="Usuário ou senha incorretos."), 401
 
 
 @app.post("/api/logout")
 def logout():
     session.clear()
+    g.pop("usuario_atual", None)
     return jsonify(ok=True)
 
 
@@ -307,6 +379,7 @@ def logout():
 def entrar_visitante():
     """Tela inicial > Visitante: só visualização (vale até fechar o navegador ou clicar em Sair)."""
     session.clear()
+    g.pop("usuario_atual", None)
     session["visitante"] = True
     return jsonify(ok=True)
 
@@ -317,6 +390,7 @@ def entrar_local():
     if not (CFG.get("editar_neste_computador", True) and acesso_local()):
         return jsonify(erro="Entre com seu usuário e senha."), 403
     session.clear()
+    g.pop("usuario_atual", None)
     session["local_ok"] = True
     return jsonify(ok=True)
 
@@ -328,13 +402,15 @@ def trocar_minha_senha():
         return jsonify(erro="Entre com sua conta primeiro."), 401
     d = body()
     nova = d.get("nova") or ""
-    if len(nova) < 6:
-        return jsonify(erro="A senha precisa ter pelo menos 6 caracteres."), 400
+    if len(nova) < SENHA_MIN:
+        return jsonify(erro=f"A senha precisa ter pelo menos {SENHA_MIN} caracteres."), 400
     with db.connect() as con:
         atual = con.execute("SELECT senha_hash FROM usuarios WHERE id=?", (u["id"],)).fetchone()
         if not check_password_hash(atual["senha_hash"], d.get("atual") or ""):
             return jsonify(erro="Senha atual incorreta."), 400
-        con.execute("UPDATE usuarios SET senha_hash=? WHERE id=?", (generate_password_hash(nova), u["id"]))
+        novo_hash = generate_password_hash(nova)
+        con.execute("UPDATE usuarios SET senha_hash=? WHERE id=?", (novo_hash, u["id"]))
+    session["sv"] = novo_hash[-16:]   # continua logada aqui; as outras sessões desta conta caem
     registrar("trocou a própria senha")
     return jsonify(ok=True)
 
@@ -345,7 +421,7 @@ def trocar_minha_senha():
 def listar_usuarios():
     with db.connect() as con:
         return jsonify(db.rows(con.execute(
-            "SELECT id, nome, login, perfil, ativo, criado_em, ultimo_acesso, acessos FROM usuarios ORDER BY ativo DESC, nome")))
+            "SELECT id, nome, login, perfil, ativo, criado_em, ultimo_acesso, acessos, visao, area FROM usuarios ORDER BY ativo DESC, nome")))
 
 
 @app.post("/api/usuarios")
@@ -364,24 +440,92 @@ def salvar_usuario():
     if not guias:
         abort(400, "Marque pelo menos uma guia que a pessoa pode acessar.")
     acessos_json = json.dumps(guias)
+    area = importer.up(d.get("area"))
+    if perfil != "admin" and "docs" in guias and "area" in d and not area:
+        abort(400, "Escolha a área da pessoa: ela define quais documentos ela vê.")
+    v = d.get("visao") if perfil != "admin" else None
+    v_json = None
+    if isinstance(v, dict):
+        v = {k: sorted({str(x).strip() for x in (v.get(k) or []) if str(x).strip()}) for k in ("centros", "projetos")}
+        if not v["centros"] and not v["projetos"]:
+            abort(400, "Marque pelo menos um centro de custo ou projeto, ou deixe a visão como Tudo.")
+        v_json = json.dumps(v, ensure_ascii=False)
     with db.connect() as con:
+        if area and not con.execute("SELECT 1 FROM areas WHERE nome=?", (area,)).fetchone():
+            abort(400, "Essa área não está cadastrada.")
         if d.get("id"):
+            if "area" in d:
+                con.execute("UPDATE usuarios SET area=? WHERE id=?", (area, d["id"]))
             con.execute("UPDATE usuarios SET nome=?, login=?, perfil=?, ativo=?, acessos=? WHERE id=?",
                         (nome, login_, perfil, 1 if d.get("ativo", True) else 0, acessos_json, d["id"]))
+            if "visao" in d or perfil == "admin":
+                con.execute("UPDATE usuarios SET visao=? WHERE id=?", (v_json, d["id"]))
             if senha:
-                if len(senha) < 6:
-                    abort(400, "A senha precisa ter pelo menos 6 caracteres.")
+                if len(senha) < SENHA_MIN:
+                    abort(400, f"A senha precisa ter pelo menos {SENHA_MIN} caracteres.")
                 con.execute("UPDATE usuarios SET senha_hash=? WHERE id=?", (generate_password_hash(senha), d["id"]))
             acao = f"alterou a conta de {nome}" + (" (nova senha)" if senha else "")
         else:
-            if len(senha) < 6:
-                abort(400, "A senha precisa ter pelo menos 6 caracteres.")
+            if len(senha) < SENHA_MIN:
+                abort(400, f"A senha precisa ter pelo menos {SENHA_MIN} caracteres.")
             if con.execute("SELECT 1 FROM usuarios WHERE login=?", (login_,)).fetchone():
                 return jsonify(erro="Já existe uma conta com esse usuário."), 409
-            con.execute("INSERT INTO usuarios(nome, login, senha_hash, perfil, acessos) VALUES (?,?,?,?,?)",
-                        (nome, login_, generate_password_hash(senha), perfil, acessos_json))
+            con.execute("INSERT INTO usuarios(nome, login, senha_hash, perfil, acessos, visao, area) VALUES (?,?,?,?,?,?,?)",
+                        (nome, login_, generate_password_hash(senha), perfil, acessos_json, v_json, area))
+            if d.get("solicitacao_id"):
+                mod_perfil.fechar_login(con, d["solicitacao_id"], quem())
             acao = f"criou a conta de {nome} ({login_})"
     registrar(acao)
+    return jsonify(ok=True)
+
+
+# ----------------------------------------------------------------------------- áreas (separam os Documentos)
+@app.get("/api/areas")
+def listar_areas():
+    if not logado():
+        return jsonify(erro="Entre com sua conta primeiro."), 401
+    with db.connect() as con:
+        return jsonify(db.rows(con.execute("""SELECT a.*, (SELECT COUNT(*) FROM usuarios u WHERE u.area = a.nome) AS n_contas,
+            (SELECT COUNT(*) FROM doc_documentos d WHERE d.area = a.nome) AS n_docs FROM areas a ORDER BY a.nome""")))
+
+
+@app.post("/api/areas")
+@requer_admin
+def salvar_area():
+    d = body()
+    nome = importer.up(d.get("nome"))
+    if not nome or len(nome) > 60:
+        abort(400, "Informe o nome da área (até 60 caracteres).")
+    with db.connect() as con:
+        outra = con.execute("SELECT id FROM areas WHERE nome=?", (nome,)).fetchone()
+        if outra and outra["id"] != d.get("id"):
+            return jsonify(erro="Essa área já existe."), 409
+        if d.get("id"):
+            antiga = con.execute("SELECT nome FROM areas WHERE id=?", (d["id"],)).fetchone()
+            if not antiga:
+                abort(404, "Área não encontrada.")
+            con.execute("UPDATE areas SET nome=? WHERE id=?", (nome, d["id"]))
+            con.execute("UPDATE usuarios SET area=? WHERE area=?", (nome, antiga["nome"]))
+            con.execute("UPDATE doc_documentos SET area=? WHERE area=?", (nome, antiga["nome"]))
+        else:
+            con.execute("INSERT INTO areas(nome) VALUES (?)", (nome,))
+    registrar("salvou a área", nome)
+    return jsonify(ok=True)
+
+
+@app.delete("/api/areas/<int:aid>")
+@requer_admin
+def excluir_area(aid):
+    with db.connect() as con:
+        a = con.execute("SELECT nome FROM areas WHERE id=?", (aid,)).fetchone()
+        if not a:
+            abort(404, "Área não encontrada.")
+        n = (con.execute("SELECT COUNT(*) FROM usuarios WHERE area=?", (a["nome"],)).fetchone()[0]
+             + con.execute("SELECT COUNT(*) FROM doc_documentos WHERE area=?", (a["nome"],)).fetchone()[0])
+        if n:
+            return jsonify(erro="Esta área está em uso. Mude as contas e documentos dela antes de excluir."), 409
+        con.execute("DELETE FROM areas WHERE id=?", (aid,))
+    registrar("excluiu a área", a["nome"])
     return jsonify(ok=True)
 
 
@@ -472,7 +616,7 @@ def duplicar_evento(eid):
 def excluir_evento(eid):
     with db.connect() as con:
         for a in con.execute("SELECT arquivo FROM anexos WHERE evento_id=?", (eid,)):
-            (db.ANEXOS_DIR / a["arquivo"]).unlink(missing_ok=True)
+            lixeira.guardar(db.ANEXOS_DIR / a["arquivo"])
         con.execute("DELETE FROM eventos WHERE id=?", (eid,))
         return jsonify(ok=True)
 
@@ -895,7 +1039,7 @@ def excluir_anexo(aid):
     with db.connect() as con:
         a = con.execute("SELECT arquivo FROM anexos WHERE id=?", (aid,)).fetchone()
         if a:
-            (db.ANEXOS_DIR / a["arquivo"]).unlink(missing_ok=True)
+            lixeira.guardar(db.ANEXOS_DIR / a["arquivo"])
             con.execute("DELETE FROM anexos WHERE id=?", (aid,))
         return jsonify(ok=True)
 
@@ -952,6 +1096,12 @@ def exportar():
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+# ----------------------------------------------------------------------------- perfil: foto e solicitações de acesso
+import lixeira  # noqa: E402
+import perfil as mod_perfil  # noqa: E402   (salvar_usuario tem uma variável "perfil")
+
+mod_perfil.registrar_rotas(app, requer_admin, registrar, quem, usuario_logado, chave_foto, logado, GUIAS)
+
 # ----------------------------------------------------------------------------- medições de notas fiscais
 import nf  # noqa: E402
 
@@ -988,6 +1138,10 @@ import sup  # noqa: E402
 
 sup.registrar_rotas(app, requer_guia("sup"), registrar)
 
+
+# ----------------------------------------------------------------------------- lixeira: desfazer exclusões (só administrador)
+lixeira.registrar_rotas(app, requer_admin, registrar, quem, e_admin)
+db.criar_indices()
 
 # ----------------------------------------------------------------------------- planilha única de importação (NF + budget)
 import importacao  # noqa: E402
@@ -1051,4 +1205,4 @@ def importacao_importar():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORTA", CFG["porta"])), debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORTA", CFG["porta"])), debug=os.environ.get("CENTRAL_DEBUG") == "1")

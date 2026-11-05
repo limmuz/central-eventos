@@ -11,11 +11,12 @@
   <header class="topo">
     <div class="topo__marca">
       <span class="antetitulo">Arena Demo · <span id="setor">Engenharia &amp; Infraestrutura</span></span>
-      <h1 id="titulo">Central de Engenharia</h1>
+      <a class="topo__inicio" href="#/visao" aria-label="Ir para o início"><h1 id="titulo">Central de Engenharia</h1></a>
     </div>
     <div class="topo__acoes">
       <span class="selo-modo" id="selo-modo"></span>
       <button class="btn btn--fantasma" id="btn-cadeado" title="Entrar com a senha de edição" hidden></button>
+      <a class="avatar" id="btn-perfil" href="#/perfil" hidden></a>
     </div>
     <svg class="topo__barras" viewBox="0 0 190 120" preserveAspectRatio="none" aria-hidden="true">
       <rect x="0" y="0" width="76" height="40"/><rect x="110" y="0" width="22" height="40"/>
@@ -49,11 +50,8 @@
     <a href="#/sup/resumo" data-rota="sup" data-sub="resumo" data-guia="sup" hidden>Resumo por mês</a>
     <span class="abas__sep"></span>
     <a href="#/cadastro" data-rota="cadastro" data-editor data-guia="relatorio">Cadastro</a>
-    <a href="#/catalogo" data-rota="catalogo" data-guia="relatorio">Catálogo</a>
+    <a href="#/catalogo" data-rota="catalogo" data-guia="relatorio" data-so-visitante hidden>Catálogo</a>
     <a href="#/dados" data-rota="dados" data-editor data-guia="relatorio">Importar / Exportar</a>
-    <a href="#/nf/config" data-rota="nf" data-sub="config" data-guia="nf" hidden>Configurações</a>
-    <a href="#/budget/cadastros" data-rota="budget" data-sub="cadastros" data-guia="budget" hidden>Cadastros</a>
-    <a href="#/sup/config" data-rota="sup" data-sub="config" data-guia="sup" data-editor hidden>Configurações</a>
   </nav>
 
   <div class="gaveta" id="gaveta" hidden>
@@ -72,8 +70,7 @@
         <a href="#/sup/mes" data-area-btn="sup"><b>Suprimentos</b><small>Contas de energia, água e gás: rateio mensal por centro de custo e planilha de importação</small></a>
       </nav>
       <div class="gaveta__rodape">
-        <a href="#/equipe" data-admin hidden>Equipe e acessos</a>
-        <button class="gaveta__atalhos" type="button" data-fechar-gaveta onclick="App.ajudaTeclado()">Atalhos do teclado (tecla ?)</button>
+        <button class="gaveta__atalhos" type="button" data-fechar-gaveta data-ajuda-teclado>Atalhos do teclado (tecla ?)</button>
       </div>
     </aside>
   </div>
@@ -91,6 +88,7 @@
   <script src="/static/vendor/chart.umd.min.js"></script>
   <script src="/static/vendor/chartjs-plugin-datalabels.min.js"></script>
   <script src="/static/js/nucleo.js"></script>
+  <script src="/static/js/interface.js"></script>
   <script src="/static/js/ajuda.js"></script>
   <script src="/static/js/graficos.js"></script>
   <script src="/static/js/pag_visao.js"></script>
@@ -101,6 +99,7 @@
   <script src="/static/js/pag_cadastro.js"></script>
   <script src="/static/js/pag_dados.js"></script>
   <script src="/static/js/pag_equipe.js"></script>
+  <script src="/static/js/pag_perfil.js"></script>
   <script src="/static/js/pag_nf.js"></script>
   <script src="/static/js/pag_docs.js"></script>
   <script src="/static/js/pag_budget.js"></script>

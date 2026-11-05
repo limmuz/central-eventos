@@ -5,7 +5,7 @@ listas suspensas, tabelas, consulta da aba "Lista suspensa", comentários, estil
   - Planilha requisitante: datas e totais das contas (linha 2), as linhas de rateio e a Engenharia (fórmula) no fim;
   - Planilha Suprimentos: uma linha de item para cada linha da requisitante (fórmulas iguais às do modelo).
 Correções nas fórmulas do modelo (o original sempre usava a coluna de energia e pegava o total errado):
-  - QUANTIDADE usa a coluna da conta do agente escolhido em F2 (Eletropaulo = energia, Cia Saneamento = água, Comgás = gás);
+  - QUANTIDADE usa a coluna da conta do agente escolhido em F2 (energia, água ou gás);
   - VALOR TOTAL do documento usa o total dessa conta; centro de custo / projeto caem no código do site se o nome não
     estiver nas listas.
 """
@@ -16,8 +16,13 @@ import zipfile
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-MODELO = Path(__file__).resolve().parent / "modelos" / "MODELO SUPRIMENTOS.xlsx"
-NOME_AGENTE = {"energia": "Eletropaulo", "agua": "Cia Saneamento", "gas": "Comgás"}
+BASE = Path(__file__).resolve().parent
+EXEMPLO = BASE / "modelos" / "MODELO SUPRIMENTOS.xlsx"            # planilha fictícia
+
+
+def _arquivo_modelo():
+    return EXEMPLO
+NOME_AGENTE = {"energia": "Energia (exemplo)", "agua": "Água (exemplo)", "gas": "Gás (exemplo)"}
 
 
 def _col(c):
@@ -74,9 +79,10 @@ def _listas(z):
 
 def gerar(d, cfg, dcc, dpj, agente="energia"):
     """d = sup.calcular(con, mes). Devolve os bytes do .xlsx no formato do modelo."""
-    if not MODELO.exists():
-        raise FileNotFoundError(f"Falta o arquivo-modelo: {MODELO}")
-    original = MODELO.read_bytes()
+    modelo = _arquivo_modelo()
+    if not modelo.exists():
+        raise FileNotFoundError(f"Falta o arquivo-modelo: {modelo}")
+    original = modelo.read_bytes()
     cc_nome, pj_nome = _listas(original)
     zin = zipfile.ZipFile(io.BytesIO(original))
     arq = {n: zin.read(n) for n in zin.namelist()}

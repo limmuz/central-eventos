@@ -40,7 +40,7 @@ App.bud.situacao = function (cc, pj, cl, ano) {
   return { ok, texto: ok ? `${nome} está no budget de ${a}` : `${nome} não está no budget de ${a} — o valor não está sendo calculado.` };
 };
 App.bud.aviso = (sit) => (sit ? el("div", { class: "aviso-budget " + (sit.ok ? "aviso-budget--ok" : "aviso-budget--alerta") }, sit.texto) : null);
-App.bud.linkCadastros = () => el("a", { href: "#/budget/cadastros", "data-fechar": "", class: "link-cadastros" }, "Não está na lista? Cadastre em Budget › Cadastros →");
+App.bud.linkCadastros = () => el("a", { href: "#/budget/cadastros", "data-fechar": "", class: "link-cadastros" }, "Não está na lista? Cadastre em Meu perfil › Configurações › Budget →");
 
 /** Listas suspensas de centro de custo, projeto (filtrado pelo centro de custo) e classe financeira, vindas dos Cadastros.
     ano(): ano usado no aviso "não está no budget". */
@@ -689,7 +689,8 @@ function budEditarLinha(l) {
   const sol = el("input", { type: "number", step: "0.01", min: "0", value: l.solicitado ?? "" });
   const apr = el("input", { type: "number", step: "0.01", min: "0", value: l.aprovado ?? "" });
   const msg = el("p", { class: "ajuda", style: { color: "var(--perigo)", minHeight: "18px" } });
-  App.modal(el("div", { class: "modal--largo" }, el("h3", {}, novo ? `Nova linha do budget ${l.ano}` : `Linha do budget ${l.ano}`),
+  const progressoLinha = App.progressoForm([{ rotulo: "classe financeira", ok: () => !!cps.cl.value }, { rotulo: "centro de custo ou projeto", ok: () => !!(cps.cc.value || cps.pj.value) }]);
+  App.modal(el("div", { class: "modal--largo" }, el("h3", {}, novo ? `Nova linha do budget ${l.ano}` : `Linha do budget ${l.ano}`), progressoLinha,
     novo ? null : budResumoLinha(l),
     el("div", { class: "grade-form" }, cps.campos(),
       el("div", { class: "campo campo--largo" }, desc),
@@ -859,6 +860,8 @@ async function budEditarPedido(p) {
   rat.bloco.querySelector("input[type=checkbox]").addEventListener("change", mostrar);
   mostrar();
   App.modal(el("div", { class: "modal--largo" }, el("h3", {}, novo ? "Novo pedido" : `Pedido ${p.numero}`),
+    App.progressoForm([{ rotulo: "nº do pedido", ok: () => !!num.value.trim() }, { rotulo: "data", ok: () => !!data.value }, { rotulo: "valor", ok: () => !!valor.value },
+      { rotulo: "fornecedor", ok: () => !!forn.value.trim() }]),
     el("div", { class: "grade-form" },
       el("label", { class: "campo" }, el("span", {}, "Nº do pedido"), num),
       el("label", { class: "campo" }, el("span", {}, "Data de emissão"), data),

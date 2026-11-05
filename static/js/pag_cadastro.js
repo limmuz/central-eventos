@@ -35,7 +35,7 @@ App.paginas.cadastro = async function (raiz, params) {
   };
   busca.oninput = desenharLista;
   desenharLista();
-  lista.querySelector(".sel")?.scrollIntoView({ block: "center" });
+  lista.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
 
   if (id === "novo") return formEvento(editor, null);
   if (!id) { editor.append(el("div", { class: "cartao vazio" }, "Escolha um evento na lista ou crie um novo.")); return; }
@@ -111,7 +111,7 @@ App.paginas.cadastro = async function (raiz, params) {
         { rotulo: "Total", num: true, valor: (i) => i.total, render: (i) => App.fmt.brl(i.total), total: (l) => App.fmt.brl(App.soma(l, (i) => i.total)) },
         { rotulo: "", render: (i) => ro ? "" : el("span", { style: { whiteSpace: "nowrap" } },
           el("button", { class: "btn btn--mini btn--linha", title: "Editar", onclick: () => editarItem(i) }, "Editar"),
-          el("button", { class: "btn btn--mini btn--linha", title: "Excluir", onclick: async () => { await App.api(`/api/itens/${i.id}`, { method: "DELETE" }); recarregar(); } }, "Excluir")) },
+          el("button", { class: "btn btn--mini btn--linha", title: "Excluir", onclick: async () => { if (!(await App.confirmar("Excluir item", `Excluir ${i.item}?`, "Excluir"))) return; await App.api(`/api/itens/${i.id}`, { method: "DELETE" }); recarregar(); } }, "Excluir")) },
       ], e.itens, { rodape: true, vazio: "Nenhum item lançado." }),
       ro ? null : el("div", { class: "grade g-2", style: { marginTop: "16px" } },
         el("div", {}, el("h4", { style: { marginBottom: "10px" } }, "Adicionar um item"),
@@ -193,7 +193,7 @@ App.paginas.cadastro = async function (raiz, params) {
         { rotulo: "Início", valor: (c) => c.hora_inicio },
         { rotulo: "Fim", valor: (c) => c.hora_final },
         { rotulo: "Tempo", num: true, valor: (c) => c.tempo, render: (c) => App.fmt.min(c.tempo) },
-        { rotulo: "", render: (c) => ro ? "" : el("button", { class: "btn btn--mini btn--linha", title: "Excluir", onclick: async () => { await App.api(`/api/chamados/${c.id}`, { method: "DELETE" }); recarregar(); } }, "Excluir") },
+        { rotulo: "", render: (c) => ro ? "" : el("button", { class: "btn btn--mini btn--linha", title: "Excluir", onclick: async () => { if (!(await App.confirmar("Excluir chamado", "Excluir este chamado?", "Excluir"))) return; await App.api(`/api/chamados/${c.id}`, { method: "DELETE" }); recarregar(); } }, "Excluir") },
       ], e.chamados, { vazio: "Nenhum chamado." }),
       ro ? null : el("div", { class: "grade g-2", style: { marginTop: "16px" } },
         el("div", {}, el("h4", { style: { marginBottom: "10px" } }, "Adicionar um chamado"),
@@ -278,6 +278,7 @@ App.paginas.cadastro = async function (raiz, params) {
         },
       }, "Excluir evento")] : [];
     alvo.append(el(ev ? "div" : "section", { class: ev ? "" : "cartao" },
+      ev ? null : App.progressoForm([{ rotulo: "nome", ok: () => !!f.nome.value.trim() }, { rotulo: "data", ok: () => !!f.data.value }]),
       ev ? null : el("div", { class: "cartao__titulo" }, el("h3", {}, "Novo evento", App.botaoAjuda("Cadastro manual de um evento (nome, data, categoria, gênero). Depois de criado, anexe o relatório de custos para preencher itens, medidores e chamados.", "Novo evento"))),
       el("div", { class: "form-grade" },
         el("label", { class: "campo largo" }, el("span", {}, "Nome do evento *"), f.nome, dlN),
@@ -341,6 +342,7 @@ App.paginas.catalogo = async function (raiz) {
         el("button", { class: "btn btn--mini btn--linha", title: "Editar", onclick: () => editarSigla(s) }, "Editar"),
         el("button", {
           class: "btn btn--mini btn--linha", title: "Excluir", onclick: async () => {
+            if (!(await App.confirmar("Excluir sigla", `Excluir a sigla ${s.sigla}?`, "Excluir"))) return;
             await App.api(`/api/siglas/${encodeURIComponent(s.sigla)}`, { method: "DELETE" });
             siglas.splice(siglas.indexOf(s), 1); desenharSiglas();
           },

@@ -33,6 +33,9 @@ from werkzeug.utils import secure_filename
 import db
 import exporter
 import importer
+import lixeira
+import seguranca
+import visao
 
 PEDIDOS_DIR = db.DATA_DIR / "pedidos"
 MOTIVOS = ["MATERIAL MANUTENÇÃO CIVIL", "MATERIAL ELÉTRICA", "MATERIAL HIDRÁULICA", "AVARIAS",
@@ -358,6 +361,9 @@ def linhas_para_previsto(con, ano):
     info = {i["id"]: i for i in itens(con)}
     saida = [{**info[i], "item_id": i, "no_budget": i in previsto, "aprovado": previsto.get(i, (None, None))[0],
               "solicitado": previsto.get(i, (None, None))[1], "gasto": round(gasto.get(i, 0), 2)} for i in ids if i in info]
+    visiveis = visao.ids_itens(con)
+    if visiveis is not None:
+        saida = [x for x in saida if x["item_id"] in visiveis]
     saida.sort(key=lambda x: (x["projeto"], x["centro_custo"], x["classe_numero"]))
     return saida
 
@@ -439,6 +445,9 @@ def lancamentos_ano(con, ano):
         if x["item_id"] in no_budget:
             out.append({"tipo": "CONSUMO", "id": x["id"], "data": x["data"], "valor": x["valor"], "item_id": x["item_id"],
                         "fornecedor": x["fornecedor"], "motivo": "", "ref": x["ref"] + f" · {_pct_txt(x['pct'])} da parte da Engenharia"})
+    visiveis = visao.ids_itens(con)
+    if visiveis is not None:
+        out = [x for x in out if x["item_id"] in visiveis]
     return sorted(out, key=lambda x: x["data"] or "")
 
 
@@ -470,6 +479,9 @@ def fora_budget(con, ano=None):
                           "centro_custo": i.get("centro_custo", ""), "projeto": i.get("projeto", ""),
                           "classe_numero": i.get("classe_numero", ""), "classe_descricao": i.get("classe_descricao", ""),
                           "motivo": f"não há budget cadastrado para {a}" if a not in com_budget else f"essa linha não está no budget de {a}"})
+    visiveis = visao.ids_itens(con)
+    if visiveis is not None:
+        lista = [x for x in lista if x["item_id"] in visiveis]
     lista.sort(key=lambda x: x["data"], reverse=True)
     f_ano, p_ano = ("AND substr(d,1,4)=?", (str(ano),)) if ano else ("", ())
     sem = {
@@ -478,8 +490,10 @@ def fora_budget(con, ano=None):
         "pedidos": dict(con.execute(f"""SELECT COUNT(*) AS n, COALESCE(SUM(valor),0) AS valor FROM (
             SELECT data_emissao AS d, valor FROM bud_pedidos WHERE status<>'CANCELADO' AND item_id IS NULL) WHERE 1=1 {f_ano}""", p_ano).fetchone()),
     }
+    if visiveis is not None:   # o que não tem classe não aparece para quem tem visão restrita
+        sem = {k: {"n": 0, "valor": 0} for k in sem}
     return {"itens": lista[:1000], "n": len(lista), "valor": round(sum(x["valor"] or 0 for x in lista), 2),
-            "medicoes": [r["id"] for r in med], "pedidos": [r["id"] for r in ped], "sem_classe": sem}
+            "medicoes": [x["id"] for x in lista if x["tipo"] == "MEDIÇÃO"], "pedidos": [x["id"] for x in lista if x["tipo"] == "PEDIDO"], "sem_classe": sem}
 
 
 # ----------------------------------------------------------------------------- Excel (modelo, exportar, importar)
@@ -595,6 +609,7 @@ def gerar_excel(con, quais=TODAS, ano=None, modelo=False, filtro=None):
         return buf
 
     info = {i["id"]: i for i in itens(con)}
+    visiveis = visao.ids_itens(con)
     chave = lambda iid: [info[iid]["centro_custo"], info[iid]["projeto"], info[iid]["classe_numero"]] if iid in info else ["", "", ""]
     if "BUDGET" in quais:
         q = "SELECT p.ano, p.item_id, p.valor FROM bud_previsto p"
@@ -608,7 +623,7 @@ def gerar_excel(con, quais=TODAS, ano=None, modelo=False, filtro=None):
         q = q.replace("p.valor FROM", "p.valor, p.solicitado FROM")
         for r in con.execute(q + " ORDER BY p.ano DESC, p.item_id", args):
             i = info.get(r["item_id"])
-            if not i:
+            if not i or (visiveis is not None and r["item_id"] not in visiveis):
                 continue
             if r["ano"] not in contas:
                 contas[r["ano"]] = {l["item_id"]: l for l in resumo_ano(con, r["ano"])}
@@ -623,8 +638,9 @@ def gerar_excel(con, quais=TODAS, ano=None, modelo=False, filtro=None):
         exporter._tabela(ws, TABELAS["BUDGET"], cab, linhas or [[None] * len(cab)], FORMATOS["BUDGET"] + [exporter.BRL] * 3 + ["0.0%", "0.0%"],
                          LARGURAS["BUDGET"] + [16] * len(COLS_CONTAS))
     if "PEDIDOS" in quais:
-        q = "SELECT p.* FROM bud_pedidos p LEFT JOIN bud_itens i ON i.id = p.item_id WHERE 1=1"
-        args = []
+        cond_v, par_v = visao.cond_pedido()
+        q = f"SELECT p.* FROM bud_pedidos p LEFT JOIN bud_itens i ON i.id = p.item_id WHERE {cond_v}"
+        args = list(par_v)
         f = filtro or {}
         if ano and not (f.get("de") or f.get("ate")):
             q += " AND substr(p.data_emissao,1,4)=?"; args.append(str(ano))
@@ -659,7 +675,8 @@ def gerar_excel(con, quais=TODAS, ano=None, modelo=False, filtro=None):
         if ano:
             q += " WHERE substr(data,1,4)=?"; args = (str(ano),)
         linhas = [[exporter._d(r["data"]), r["valor"], *chave(r["origem_id"]), *chave(r["destino_id"]), r["motivo"]]
-                  for r in con.execute(q + " ORDER BY data DESC", args)]
+                  for r in con.execute(q + " ORDER BY data DESC", args)
+                  if visiveis is None or r["origem_id"] in visiveis or r["destino_id"] in visiveis]
         _planilha(wb, "REALOCACOES", linhas)
     cad = cadastros(con) if set(quais) & set(CADASTROS) else None
     if "CENTROS DE CUSTO" in quais:
@@ -921,9 +938,13 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     @guarda_pedidos
     def bud_base():
         with db.connect() as con:
-            its = itens(con)
+            its, visiveis = itens(con), visao.ids_itens(con)
             cad = cadastros(con)
-            return jsonify(anos=anos(con), itens=its, motivos=MOTIVOS, cadastros=cad, no_budget=linhas_por_ano(con),
+            no_budget = linhas_por_ano(con)
+            if visiveis is not None:
+                its = [i for i in its if i["id"] in visiveis]
+                no_budget = {a: [i for i in v if i in visiveis] for a, v in no_budget.items()}
+            return jsonify(anos=anos(con), itens=its, motivos=MOTIVOS, cadastros=cad, no_budget=no_budget,
                            centros=sorted({i["centro_custo"] for i in its} | {c["nome"] for c in cad["centros"]}),
                            projetos=sorted({i["projeto"] for i in its} | {p["nome"] for p in cad["projetos"]}))
 
@@ -931,7 +952,8 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     @guarda
     def bud_ano(ano):
         with db.connect() as con:
-            return jsonify(ano=ano, linhas=resumo_ano(con, ano))
+            visiveis = visao.ids_itens(con)
+            return jsonify(ano=ano, linhas=[l for l in resumo_ano(con, ano) if visiveis is None or l["item_id"] in visiveis])
 
     @app.get("/api/budget/lancamentos")
     @guarda
@@ -943,6 +965,7 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     @guarda
     def bud_detalhe():
         with db.connect() as con:
+            visao.exigir_item(con, int(request.args["item"]))
             return jsonify(detalhe(con, int(request.args["item"]), request.args["mes"][:7]))
 
     @app.post("/api/budget/anos")
@@ -964,6 +987,8 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     @guarda
     def bud_excluir_ano(ano):
         """Apaga o previsto do ano (todas as linhas). Medições, pedidos e cadastros não são tocados."""
+        if visao.atual() is not None:   # apagaria linhas que a pessoa não vê
+            return jsonify(erro="Sua visão é restrita: só quem vê tudo pode excluir um ano inteiro."), 403
         with db.connect() as con:
             n = con.execute("DELETE FROM bud_previsto WHERE ano=?", (ano,)).rowcount
             con.execute("DELETE FROM bud_anos WHERE ano=?", (ano,))
@@ -980,9 +1005,12 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
             abort(400, "Informe o ano.")
         if not _txt(d.get("classe_numero")):
             abort(400, "Informe o número da classe financeira.")
+        if not visao.permite(_cod(d.get("centro_custo")), _cod(d.get("projeto"))):
+            return jsonify(erro="Esse centro de custo e projeto estão fora da sua visão. Peça ao administrador para liberar."), 403
         with db.connect() as con:
             if d.get("item_id"):
                 iid = int(d["item_id"])
+                visao.exigir_item(con, iid)
                 outro = con.execute("SELECT id FROM bud_itens WHERE centro_custo=? AND projeto=? AND classe_numero=?",
                                     (_cod(d.get("centro_custo")), _cod(d.get("projeto")), _txt(d.get("classe_numero")))).fetchone()
                 if outro and outro["id"] != iid:
@@ -1022,6 +1050,8 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
                 if "previsto" in v and "aprovado" not in v:
                     v["aprovado"] = v["previsto"]
                 iid = int(v["item_id"]) if v.get("item_id") else item_id(con, v.get("centro_custo"), v.get("projeto"), v.get("classe_numero"))
+                if iid:
+                    visao.exigir_item(con, iid)
                 if iid and gravar_valores(con, ano, iid, v.get("solicitado"), v.get("aprovado")):
                     n += 1
         return jsonify(ok=True, n=n)
@@ -1037,6 +1067,8 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
             abort(400, "Informe o ano.")
         ids = [int(i) for i in d.get("item_ids") or [] if str(i).isdigit()]
         with db.connect() as con:
+            for i in ids:
+                visao.exigir_item(con, i)
             con.execute("INSERT OR IGNORE INTO bud_anos(ano) VALUES (?)", (ano,))
             n = sum(con.execute("INSERT OR IGNORE INTO bud_previsto(ano, item_id, valor) VALUES (?,?,NULL)", (ano, i)).rowcount for i in ids)
         return jsonify(ok=True, n=n)
@@ -1045,6 +1077,7 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     @guarda
     def bud_excluir_linha(ano, iid):
         with db.connect() as con:
+            visao.exigir_item(con, iid)
             con.execute("DELETE FROM bud_previsto WHERE ano=? AND item_id=?", (ano, iid))
             if not item_usado(con, iid):
                 con.execute("DELETE FROM bud_itens WHERE id=?", (iid,))
@@ -1077,8 +1110,11 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
                 onde.append("lower(p.numero || ' ' || p.fornecedor || ' ' || p.observacao || ' ' || COALESCE(p.descricao,'') || ' ' || COALESCE(p.cnpj,'') || ' ' || COALESCE(p.processo,'') || ' ' || COALESCE(p.projeto_pend,'') || ' ' || COALESCE(i.projeto,'') || ' ' || "
                             "COALESCE(i.classe_numero,'') || ' ' || COALESCE(i.classe_descricao,'') || ' ' || COALESCE(i.centro_custo,'')) LIKE ?")
                 par.append(f"%{w}%")
+        cond_v, par_v = visao.cond_pedido()
+        onde.append(cond_v); par += par_v
         where = " WHERE " + " AND ".join(onde)
         base = " FROM bud_pedidos p LEFT JOIN bud_itens i ON i.id=p.item_id"
+        cond_ia, par_ia = visao.cond_item("ia")
         with db.connect() as con:
             fora_sql = ("(p.item_id IS NOT NULL AND p.data_emissao<>'' AND p.status<>'CANCELADO' AND NOT EXISTS (SELECT 1 FROM bud_previsto bp "
                         "WHERE bp.item_id=p.item_id AND bp.ano=CAST(substr(p.data_emissao,1,4) AS INTEGER)))")
@@ -1099,7 +1135,7 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
                 # pedido rateado: cada parte no projeto dela
                 f"SELECT COALESCE(ia.projeto,'SEM CLASSE') AS projeto, SUM(pa.valor_bud) AS valor FROM {PED_ALOC} pa "
                 "LEFT JOIN bud_itens ia ON ia.id = pa.item_bud WHERE pa.status<>'CANCELADO' AND pa.id IN (SELECT p.id" + base + where + ") "
-                "GROUP BY 1 ORDER BY 2 DESC LIMIT 15", par)]
+                f"AND {cond_ia} GROUP BY 1 ORDER BY 2 DESC LIMIT 15", par + par_ia)]
             total = con.execute("SELECT COUNT(*) AS n, COALESCE(SUM(CASE WHEN p.status<>'CANCELADO' THEN p.valor END),0) AS valor, "
                                 "SUM(p.status='CANCELADO') AS cancelados, SUM(p.item_id IS NULL) AS sem_classe, "
                                 f"SUM({fora_sql}) AS fora, COALESCE(SUM(CASE WHEN {fora_sql} THEN p.valor END),0) AS valor_fora" + base + where, par).fetchone()
@@ -1113,6 +1149,9 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
         numero = _txt(f.get("numero"))
         if not numero:
             abort(400, "Informe o número do pedido.")
+        if pid:
+            with db.connect() as con:
+                visao.exigir_pedido(con, pid, gravar=True)
         try:
             iid = int(f.get("item_id") or 0) or None
         except ValueError:
@@ -1152,10 +1191,11 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     @guarda_pedidos
     def bud_excluir_pedido(pid):
         with db.connect() as con:
+            visao.exigir_pedido(con, pid)
             r = con.execute("SELECT anexo_arquivo FROM bud_pedidos WHERE id=?", (pid,)).fetchone()
             con.execute("DELETE FROM bud_pedidos WHERE id=?", (pid,))
         if r and r["anexo_arquivo"]:
-            (PEDIDOS_DIR / r["anexo_arquivo"]).unlink(missing_ok=True)
+            lixeira.guardar(PEDIDOS_DIR / r["anexo_arquivo"])
         return jsonify(ok=True)
 
     @app.post("/api/budget/pedidos/excluir")
@@ -1166,31 +1206,29 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
         arquivos = []
         with db.connect() as con:
             for pid in ids:
+                visao.exigir_pedido(con, pid)
                 r = con.execute("SELECT anexo_arquivo FROM bud_pedidos WHERE id=?", (pid,)).fetchone()
                 if r and r["anexo_arquivo"]:
                     arquivos.append(r["anexo_arquivo"])
                 con.execute("UPDATE nf_medicoes SET pedido_id=NULL WHERE pedido_id=?", (pid,))
                 con.execute("DELETE FROM bud_pedidos WHERE id=?", (pid,))
         for a in arquivos:
-            (PEDIDOS_DIR / a).unlink(missing_ok=True)
+            lixeira.guardar(PEDIDOS_DIR / a)
         return jsonify(ok=True, n=len(ids))
 
     @app.get("/api/budget/pedidos/<int:pid>/anexo")
     @guarda_pedidos
     def bud_anexo_pedido(pid):
         with db.connect() as con:
+            visao.exigir_pedido(con, pid)
             r = con.execute("SELECT * FROM bud_pedidos WHERE id=?", (pid,)).fetchone()
         if not r:
             abort(404)
         if r["anexo_arquivo"] and (PEDIDOS_DIR / r["anexo_arquivo"]).exists():
-            return send_file(PEDIDOS_DIR / r["anexo_arquivo"], download_name=r["anexo_nome"])
-        if r["caminho_externo"]:
-            p = Path(r["caminho_externo"])
-            try:
-                if p.exists():
-                    return send_file(p, download_name=p.name)
-            except OSError:
-                pass
+            return seguranca.enviar_anexo(PEDIDOS_DIR / r["anexo_arquivo"], r["anexo_nome"])
+        p = seguranca.arquivo_externo(r["caminho_externo"])
+        if p:
+            return seguranca.enviar_anexo(p)
         abort(404, "Arquivo do pedido não encontrado.")
 
     # ---- pedido lido do PDF
@@ -1225,7 +1263,15 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
         ano = request.args.get("ano")
         with db.connect() as con:
             q = "SELECT * FROM bud_realocacoes" + (" WHERE substr(data,1,4)=?" if ano else "") + " ORDER BY data DESC, id DESC"
-            return jsonify([dict(r) for r in con.execute(q, (ano,) if ano else ())])
+            visiveis = visao.ids_itens(con)
+            return jsonify([dict(r) for r in con.execute(q, (ano,) if ano else ())
+                            if visiveis is None or r["origem_id"] in visiveis or r["destino_id"] in visiveis])
+
+    def _exigir_realocacao(con, rid):
+        r = con.execute("SELECT origem_id, destino_id FROM bud_realocacoes WHERE id=?", (rid,)).fetchone()
+        visiveis = visao.ids_itens(con)
+        if r and visiveis is not None and not ({r["origem_id"], r["destino_id"]} & visiveis):
+            abort(404, "Registro não encontrado.")
 
     @app.post("/api/budget/realocacoes")
     @guarda
@@ -1237,7 +1283,11 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
         if not data or valor <= 0 or not (o or de) or o == de:
             abort(400, "Informe data, valor (maior que zero) e classes de origem e destino diferentes.")
         with db.connect() as con:
+            for iid in (o, de):
+                if iid:
+                    visao.exigir_item(con, iid)
             if d.get("id"):
+                _exigir_realocacao(con, int(d["id"]))
                 con.execute("UPDATE bud_realocacoes SET data=?, origem_id=?, destino_id=?, valor=?, motivo=? WHERE id=?",
                             (data, o, de, valor, importer.txt(d.get("motivo")), int(d["id"])))
             else:
@@ -1249,6 +1299,7 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     @guarda
     def bud_excluir_realocacao(rid):
         with db.connect() as con:
+            _exigir_realocacao(con, rid)
             con.execute("DELETE FROM bud_realocacoes WHERE id=?", (rid,))
         return jsonify(ok=True)
 
@@ -1305,8 +1356,10 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
         d = corpo()
         with db.connect() as con:
             if d.get("tipo") == "contrato":
+                visao.exigir_contrato(con, int(d["id"]), gravar=True)
                 con.execute("UPDATE nf_contratos SET budget_item_id=? WHERE id=?", (int(d.get("item_id") or 0) or None, int(d["id"])))
             elif d.get("tipo") == "medicao":
+                visao.exigir_medicao(con, int(d["id"]), gravar=True)
                 m = con.execute("SELECT contrato_id FROM nf_medicoes WHERE id=?", (int(d["id"]),)).fetchone()
                 if not m:
                     abort(404)
@@ -1326,6 +1379,9 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     RAT = {"medicao": ("nf_rateio", "medicao_id", "nf_medicoes", "budget_item_id"),
            "pedido": ("bud_pedido_rateio", "pedido_id", "bud_pedidos", "item_id")}
 
+    def _exigir_rateio(con, tipo, rid, gravar=False):
+        (visao.exigir_medicao if tipo == "medicao" else visao.exigir_pedido)(con, rid, gravar=gravar)
+
     def _rateio(con, tipo, rid):
         t, col, _, _ = RAT[tipo]
         return [dict(r) for r in con.execute(f"""SELECT r.item_id, r.pct, r.valor, i.centro_custo, i.projeto, i.classe_numero, i.classe_descricao
@@ -1338,6 +1394,7 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
         if tipo not in RAT:
             abort(400)
         with db.connect() as con:
+            _exigir_rateio(con, tipo, rid, gravar=True)
             return jsonify(_rateio(con, tipo, rid))
 
     @app.post("/api/budget/rateio")
@@ -1397,6 +1454,7 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
     def bud_contrato(cid):
         """Classe padrão do contrato e os itens (linhas) dele, cada um com centro de custo / projeto / classe."""
         with db.connect() as con:
+            visao.exigir_contrato(con, cid, gravar=True)
             c = con.execute("SELECT budget_item_id FROM nf_contratos WHERE id=?", (cid,)).fetchone()
             if not c:
                 abort(404)
@@ -1414,6 +1472,7 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
         Item tirado da lista: as medições dele voltam a usar a classe padrão do contrato."""
         d = corpo()
         with db.connect() as con:
+            visao.exigir_contrato(con, cid, gravar=True)
             if not con.execute("SELECT 1 FROM nf_contratos WHERE id=?", (cid,)).fetchone():
                 abort(404)
             p = d.get("padrao") or {}
@@ -1488,6 +1547,8 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
                 con.execute(f"UPDATE {tabela} SET {chave}=?, {', '.join(k + '=?' for k in extra)} WHERE id=?", (valor, *extra.values(), xid))
                 if antigo != valor:
                     con.execute(f"UPDATE bud_itens SET {col_item}=? WHERE {col_item}=?", (valor, antigo))
+                    if tipo != "classes":
+                        visao.renomear(con, tipo, antigo, valor)
                     if tipo == "centros":
                         con.execute("UPDATE bud_projetos SET centro_custo=? WHERE centro_custo=?", (valor, antigo))
             else:
@@ -1549,6 +1610,8 @@ def registrar_rotas(app, guarda, registrar, guarda_pedidos=None):
             if modo == "transferir":
                 if not para or para == velho or not con.execute(f"SELECT 1 FROM {tabela} WHERE {chave}=?", (para,)).fetchone():
                     abort(400, "Escolha para qual cadastro transferir.")
+                if tipo != "classes":
+                    visao.renomear(con, tipo, velho, para)
                 for iid in ids:
                     it = dict(con.execute("SELECT * FROM bud_itens WHERE id=?", (iid,)).fetchone())
                     it[col_item] = para

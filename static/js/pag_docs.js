@@ -92,14 +92,15 @@ function docLista(corpo) {
     const lista = D.documentos.filter((d) =>
       (est.sit === "ARQUIVADO" ? d.arquivado : !d.arquivado && (!est.sit || d.situacao === est.sit)) &&
       (!est.cat || d.categoria === est.cat) &&
-      (!q || App.norm(`${d.nome} ${d.numero} ${d.orgao} ${d.responsavel} ${d.categoria} ${d.observacao}`).includes(q)));
+      (!q || App.norm(`${d.nome} ${d.numero} ${d.orgao} ${d.responsavel} ${d.categoria} ${d.area} ${d.observacao}`).includes(q)));
     alvo.append(App.cartao("Documentos", `${lista.length} documento(s) · clique para ver as renovações`,
       App.tabela([
         { rotulo: "Documento", valor: (d) => d.nome, render: (d) => el("div", { class: "celula-2l" }, el("b", {}, d.nome),
           el("small", {}, [d.numero && `nº ${d.numero}`, d.orgao].filter(Boolean).join(" · ") || "—")) },
+        App.meta.area === null ? { rotulo: "Área", valor: (d) => d.area || "", render: (d) => d.area || "—" } : null,
         { rotulo: "Categoria", valor: (d) => d.categoria, render: (d) => d.categoria ? el("span", { class: "etiqueta" }, d.categoria) : "—" },
         { rotulo: "Responsável", valor: (d) => d.responsavel, render: (d) => d.responsavel || "—" },
-        { rotulo: "Periodicidade", valor: (d) => d.periodicidade_meses || 999, render: (d) => docPer(d.periodicidade_meses) },
+        { rotulo: "Periodicidade", oculta: true, valor: (d) => d.periodicidade_meses || 999, render: (d) => docPer(d.periodicidade_meses) },
         { rotulo: "Última renovação", valor: (d) => d.data_renovacao, render: (d) => App.fmt.data(d.data_renovacao) || "—" },
         { rotulo: "Próximo vencimento", valor: (d) => d.data_vencimento || "9999", render: (d) => el("div", { class: "celula-2l" },
           el("span", {}, App.fmt.data(d.data_vencimento) || "—"),
@@ -138,9 +139,12 @@ function docVencimentos(corpo) {
 }
 
 /* ------------------------------------------------------------------ CADASTRO / EDIÇÃO (só os dados principais) */
-function docEditar(d) {
+async function docEditar(d) {
   const D = App.docs.dados;
   const novo = !d.id;
+  // quem vê todas as áreas escolhe a área do documento; os outros criam sempre na própria
+  const areas = App.meta.area === null ? await App.api("/api/areas").catch(() => []) : [];
+  const area = areas.length ? el("select", {}, areas.map((a) => el("option", { value: a.nome, selected: a.nome === (d.area || "ENGENHARIA") }, a.nome))) : null;
   const inp = (tipo, v, extra = {}) => el("input", { type: tipo, value: v ?? "", ...extra });
   const nome = inp("text", d.nome, { placeholder: "ex.: AVCB, Laudo de SPDA, Licença sanitária…" });
   const lista = el("datalist", { id: "doc-categorias" }, D.categorias.map((c) => el("option", { value: c })));
@@ -159,12 +163,14 @@ function docEditar(d) {
   const obs = el("textarea", { rows: 3 }, d.observacao || "");
   const msg = el("p", { class: "ajuda", style: { color: "var(--perigo)", minHeight: "18px" } });
   App.modal(el("div", { class: "modal--largo" }, el("h3", {}, novo ? "Novo documento" : `Editar · ${d.nome}`), lista,
+    App.progressoForm([{ rotulo: "nome", ok: () => !!nome.value.trim() }, { rotulo: "categoria", ok: () => !!cat.value.trim() }, { rotulo: "periodicidade", ok: () => !!per.value }]),
     el("div", { class: "grade-form" },
       el("label", { class: "campo", style: { gridColumn: "span 2" } }, el("span", {}, "Documento"), nome),
+      area ? el("label", { class: "campo" }, el("span", {}, "Área"), area) : null,
       el("label", { class: "campo" }, el("span", {}, "Categoria"), cat),
       el("label", { class: "campo" }, el("span", {}, "Responsável"), resp),
       el("label", { class: "campo" }, el("span", {}, "Periodicidade"), per),
-      el("div", { class: "campo" }, el("span", {}, "Situação"), sit),
+      el("div", { class: "campo campo--largo" }, el("span", {}, "Situação"), sit),
       el("label", { class: "campo campo--largo" }, el("span", {}, "Observação"), obs)),
     novo ? el("p", { class: "ajuda" }, "Depois de salvar, registre a última renovação em “Renovar”: o vencimento é calculado pela periodicidade.") : null,
     msg,
@@ -172,7 +178,7 @@ function docEditar(d) {
       el("button", { class: "btn", onclick: async () => {
         const fd = new FormData();
         Object.entries({ id: d.id || "", nome: nome.value, categoria: cat.value, responsavel: resp.value, periodicidade_meses: per.value,
-          situacao: proc.checked ? "EM PROCESSO" : "AUTO", observacao: obs.value }).forEach(([k, v]) => fd.append(k, v));
+          situacao: proc.checked ? "EM PROCESSO" : "AUTO", observacao: obs.value, ...(area ? { area: area.value } : {}) }).forEach(([k, v]) => fd.append(k, v));
         try {
           const r = await fetch("/api/docs", { method: "POST", body: fd });
           const j = await r.json().catch(() => ({}));

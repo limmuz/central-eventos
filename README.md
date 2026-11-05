@@ -23,7 +23,7 @@ Os dados de custo de cada evento (mão de obra, avarias e consumo de água, ener
 | Módulo | Principais telas |
 |---|---|
 | **Relatório de eventos** | Visão geral com KPIs de custo, avarias por item e evento, overview de um dia de evento (consumos, curva de energia por hora, chamados), manutenção (SLA, tempo médio, chamados por tipo e horário) e comparação entre dois dias |
-| **Notas fiscais** | Medições de NF por contrato, saldo e vencimento de contratos, pedidos de compra, prazos e feriados, e geração dos e-mails para o fiscal e para os fornecedores |
+| **Notas fiscais** | Medições de NF por contrato, saldo e vencimento de contratos, pedidos de compra, prazos e feriados, e geração dos e-mails para o fiscal e para os fornecedores (arquivo `.eml` com a NF anexada, que abre pronto para enviar no Outlook) |
 | **Budget** | Previsto × incorrido por centro de custo, projeto e classe financeira, com realocações e rateio de NFs |
 | **Suprimentos (consumo)** | Rateio mensal das contas de energia, água e gás entre centros de custo, com tarifas e planilhas de importação |
 | **Vencimento de documentos** | Alvarás, laudos e certificados com data de vencimento, aviso antecipado e histórico de renovações |
@@ -32,6 +32,10 @@ Além dos módulos:
 - **Importação de planilhas:** o sistema reconhece os modelos pelos títulos das colunas, não por posição fixa.
 - **Exportação:** Excel com fórmulas e relatório em PDF (A4 paisagem) já com os filtros da tela.
 - **Contas da equipe:** perfis Editor e Administrador, acesso por módulo e histórico de alterações (quem fez o quê e quando).
+- **Perfil:** foto, pedidos de acesso a módulos e pedidos de login, aprovados pelo administrador.
+- **Visão por conta:** cada pessoa vê o Budget e as notas fiscais dos centros de custo e projetos liberados, e os documentos da sua área.
+- **Lixeira:** o administrador desfaz exclusões em até 90 dias, com os registros ligados e os arquivos.
+- **Segurança:** limite de tentativas de login, conferência da origem dos pedidos, proteção de anexos e registro de auditoria.
 - **Acesso:** quem abre no próprio computador do servidor edita sem senha. Pela rede, todos só visualizam, a menos que entrem com usuário e senha.
 
 | Evento | Manutenção |
